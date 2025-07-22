@@ -29,7 +29,7 @@ class BorealisBaseDataset(Dataset):
         self.texts = texts
 
     def __len__(self) -> int:
-        return len(self.labels)
+        return len(self.texts)
 
     def __getitem__(self, index):
         audio_sample = self.audios[index]["array"]

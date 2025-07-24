@@ -45,7 +45,7 @@ class BorealisBaseDataset(Dataset):
         )
 
         tokenized = self.tokenizer(
-            text_sample,
+            text_sample + "<|im_end|>",
             padding="max_length",
             truncation=True,
             max_length=self.text_max_len,

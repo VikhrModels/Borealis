@@ -1,236 +1,233 @@
-import torch.nn as nn
-import torch
-from transformers import AutoModelForCausalLM, WhisperModel
 import math
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from transformers import WhisperModel, AutoModelForCausalLM
 
 
 class AudioLanguageAdapter(nn.Module):
+    """Простой MLP‑адаптер для повышения размерности аудио‑эмбеддингов под hidden‑size LLM."""
+
     def __init__(self, hidden_size: int, dim: int) -> None:
         super().__init__()
         self.w_in = nn.Linear(hidden_size, dim, bias=False)
         self.gelu = nn.GELU()
         self.w_out = nn.Linear(dim, dim, bias=False)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:  # (⋯, hidden_size) → (⋯, dim)
         return self.w_out(self.gelu(self.w_in(x)))
 
 
 class BorealisForConditionalGeneration(nn.Module):
+    """
+    Минимальный рабочий класс модели «аудио‑энкодер → адаптер → LLM».
+    Логика сохранена, исправлены ошибки типов, масок и shape‑операций.
+    """
+
     def __init__(
         self,
-        whisper_encoder_name="openai/whisper-large-v3-turbo",
-        llm_name="Qwen/Qwen2.5-0.5B",
+        whisper_encoder_name: str = "openai/whisper-large-v3",
+        llm_name: str = "Qwen/Qwen2.5-0.5B",
         tokenizer=None,
-        downsample_factor=4,
+        downsample_factor: int = 4,
     ):
         super().__init__()
         assert tokenizer is not None, "Tokenizer надо передать в модельку"
 
-        self.encoder = WhisperModel.from_pretrained(whisper_encoder_name).encoder
-        self.llm = AutoModelForCausalLM.from_pretrained(llm_name)
-
+        # ─── Whisper‑энкодер (заморожен) ─────────────────────────────────────────
+        self.encoder: WhisperModel = WhisperModel.from_pretrained(
+            whisper_encoder_name
+        ).encoder
         self.encoder.eval()
         for p in self.encoder.parameters():
             p.requires_grad = False
 
+        # ─── LLM ────────────────────────────────────────────────────────────────
+        self.llm = AutoModelForCausalLM.from_pretrained(llm_name)
         self.tokenizer = tokenizer
         self.llm.resize_token_embeddings(len(tokenizer))
 
+        # ─── Адаптер ────────────────────────────────────────────────────────────
         self.downsample_factor = downsample_factor
         self.adapter = AudioLanguageAdapter(
-            hidden_size=self.encoder.config.d_model * self.downsample_factor,
+            hidden_size=self.encoder.config.d_model * downsample_factor,
             dim=self.llm.config.hidden_size,
         )
 
-        self.bos_id = tokenizer("<|im_start|>", return_tensors="pt")["input_ids"][0, 0]
-        self.audio_start_id = tokenizer("<|start_of_audio|>", return_tensors="pt")[
-            "input_ids"
-        ][0, 0]
-        self.audio_end_id = tokenizer("<|end_of_audio|>", return_tensors="pt")[
-            "input_ids"
-        ][0, 0]
+        # ─── ID спец‑токенов ────────────────────────────────────────────────────
+        self.bos_id = tokenizer.convert_tokens_to_ids("<|im_start|>")
+        self.audio_start_id = tokenizer.convert_tokens_to_ids("<|start_of_audio|>")
+        self.audio_end_id = tokenizer.convert_tokens_to_ids("<|end_of_audio|>")
+
+    # ════════════════════════════════════════════════════════════════════════════
+    #                               UTILITIES
+    # ════════════════════════════════════════════════════════════════════════════
+
+    def _downsample(self, seq: torch.Tensor) -> torch.Tensor:
+        """(T, d) → (ceil(T/k), d*k)"""
+        k, (T, d) = self.downsample_factor, seq.shape
+        target = k * math.ceil(T / k)
+        if target != T:
+            seq = F.pad(seq, (0, 0, 0, target - T))
+        return seq.contiguous().view(target // k, d * k)
+
+    def _tok_embed(self, tok_id: int, batch: int, device) -> torch.Tensor:
+        idx = torch.full((batch, 1), tok_id, dtype=torch.long, device=device)
+        return self.llm.get_input_embeddings()(idx)
+
+    # ════════════════════════════════════════════════════════════════════════════
+    #                                 FORWARD
+    # ════════════════════════════════════════════════════════════════════════════
 
     def forward(
         self,
-        mel: torch.Tensor,  # (B, 128, 3000)
-        audio_att_mask: torch.Tensor,  # (B, 3000)
-        labels: torch.Tensor,  # (B, max_text_len))
-        text_att_mask: torch.Tensor,  # (B, max_text_len)
+        mel: torch.Tensor,  # (B, 128, T)
+        audio_att_mask: torch.Tensor,  # (B, T)
+        labels: torch.Tensor,  # (B, L)
+        text_att_mask: torch.Tensor,  # (B, L)
     ):
-        B = mel.size(0)
-        device = mel.device
+        B, device = mel.size(0), mel.device
 
+        # 1. Whisper‑encoder
         enc_out = self.encoder(
-            input_features=mel,
-            attention_mask=audio_att_mask,
-            return_dict=True,
-        ).last_hidden_state
+            input_features=mel, attention_mask=None, return_dict=True
+        ).last_hidden_state  # (B, T_enc, d)
 
-        audio_enc_list = []
-        for embedding in enc_out:  # по батчу: каждый (seq_len, d_model)
-            seq_len, dim = embedding.shape
-            target_seq_len = self.downsample_factor * math.ceil(
-                seq_len / self.downsample_factor
+        # 2. Down‑sample + adapter
+        audio_embs, audio_mask, max_T = [], [], 0
+        for seq in enc_out:  # (T_i, d)
+            ds = self._downsample(seq)  # (T_ds_i, d*k)
+            audio_embs.append(ds)
+            max_T = max(max_T, ds.size(0))
+
+        for ds in audio_embs:
+            pad = max_T - ds.size(0)
+            audio_mask.append(
+                torch.cat(
+                    [
+                        torch.ones(ds.size(0), dtype=torch.long, device=device),
+                        torch.zeros(pad, dtype=torch.long, device=device),
+                    ]
+                )
             )
-            padded_embedding = torch.nn.functional.pad(
-                embedding,
-                (0, 0, 0, target_seq_len - seq_len),
-            )
-            reshaped = padded_embedding.reshape(
-                target_seq_len // self.downsample_factor, dim * self.downsample_factor
-            )
-            audio_enc_list.append(reshaped)
+            if pad:
+                ds = F.pad(ds, (0, 0, 0, pad))
+        audio_embeddings = torch.stack(audio_embs, 0)  # (B, max_T, d*k)
+        audio_mask = torch.stack(audio_mask, 0)  # (B, max_T)
+        audio_embeddings = self.adapter(audio_embeddings)  # (B, max_T, h)
 
-        ready_for_adapter = torch.cat(audio_enc_list, dim=0)
+        # 3. Текст
+        text_embeddings = self.llm.get_input_embeddings()(labels)  # (B, L, h)
 
-        adapter_out = self.adapter(ready_for_adapter)
-
-        audio_embeddings_list = list(
-            torch.split(adapter_out, [a.shape[0] for a in audio_enc_list], dim=0)
+        # 4. Спец‑токены
+        emb_bos, emb_sa, emb_ea = (
+            self._tok_embed(t, B, device)
+            for t in (self.bos_id, self.audio_start_id, self.audio_end_id)
         )
 
-        audio_embeddings = torch.stack(audio_embeddings_list, dim=0)
-
-        transcript_embeddings = self.llm.get_input_embeddings()(labels)
-
-        def expand_embed(token_id):
-            idx = torch.full((B, 1), token_id, device=device, dtype=torch.long)
-            return self.llm.get_input_embeddings()(idx)
-
-        emb_bos = expand_embed(self.bos_id)
-        emb_sa = expand_embed(self.audio_start_id)
-        emb_ea = expand_embed(self.audio_end_id)
-
-        ready_inputs = torch.cat(
+        # 5. Инпуты и маска
+        inputs_embeds = torch.cat(
+            [emb_bos, emb_sa, audio_embeddings, emb_ea, text_embeddings], dim=1
+        )
+        att_mask = torch.cat(
             [
-                emb_bos,  # (B, 1, d)
-                emb_sa,  # (B, 1, d)
-                audio_embeddings,  # (B, 1500, d)
-                emb_ea,  # (B, 1, d)
-                transcript_embeddings,  # (B, L, d)
+                torch.ones(B, 1, dtype=torch.long, device=device),  # BOS
+                torch.ones(B, 1, dtype=torch.long, device=device),  # <audio>
+                audio_mask,
+                torch.ones(B, 1, dtype=torch.long, device=device),  # </audio>
+                text_att_mask.long(),
             ],
             dim=1,
         )
 
-        def ones(n):
-            return torch.ones(B, n, device=device, dtype=torch.float32)
+        # 6. Loss labels
+        prefix = 1 + 1 + max_T + 1
+        ignore = labels.new_full((B, prefix), -100)
+        loss_labels = torch.cat([ignore, labels], dim=1)
+        if self.tokenizer.pad_token_id is not None:
+            loss_labels[loss_labels == self.tokenizer.pad_token_id] = -100
 
-        ready_att_mask = torch.cat(
-            [
-                ones(1),  # bos
-                ones(1),  # start_audio
-                ones(audio_embeddings.size(1)),  # аудио (1500)
-                ones(1),  # end_audio
-                text_att_mask,  # текст
-            ],
-            dim=1,
-        )
-
-        prefix_len = 1 + 1 + audio_embeddings.size(1) + 1
-        ignore_pre = labels.new_full((B, prefix_len), -100)
-        loss_labels = torch.cat([ignore_pre, labels], dim=1)
-
-        loss_labels[loss_labels == self.tokenizer.pad_token_id] = -100
-
+        # 7. LLM
         out = self.llm(
-            inputs_embeds=ready_inputs,
-            attention_mask=ready_att_mask,
+            inputs_embeds=inputs_embeds,
+            attention_mask=att_mask,
             labels=loss_labels,
             return_dict=True,
         )
         return out.loss, out.logits
 
+    # ════════════════════════════════════════════════════════════════════════════
+    #                                GENERATE
+    # ════════════════════════════════════════════════════════════════════════════
+
+    @torch.no_grad()
     def generate(
         self,
-        mel: torch.Tensor,  # (B, 128, 3000) or (128, 3000)
-        att_mask: torch.Tensor,  # (B, 3000) or (3000,)
+        mel: torch.Tensor,  # (B, 128, T) or (128, T)
+        att_mask: torch.Tensor,  # (B, T)     or (T,)
         max_new_tokens: int = 512,
         **kwargs,
     ):
-        is_single = False
-        if mel.dim() == 2:
-            is_single = True
-            mel = mel.unsqueeze(0)
-            att_mask = att_mask.unsqueeze(0)
+        single = mel.dim() == 2
+        if single:
+            mel, att_mask = mel.unsqueeze(0), att_mask.unsqueeze(0)
 
-        B = mel.size(0)
-        device = mel.device
+        B, device = mel.size(0), mel.device
 
+        # 1. Encoder
         enc_out = self.encoder(
-            input_features=mel,
-            attention_mask=att_mask,
-            return_dict=True,
+            input_features=mel, attention_mask=None, return_dict=True
         ).last_hidden_state
 
-        audio_enc_list = []
-        for embedding in enc_out:  # по батчу: каждый (seq_len, d_model)
-            seq_len, dim = embedding.shape
-            target_seq_len = self.downsample_factor * math.ceil(
-                seq_len / self.downsample_factor
-            )
-            padded_embedding = torch.nn.functional.pad(
-                embedding,
-                (0, 0, 0, target_seq_len - seq_len),
-            )
-            reshaped = padded_embedding.reshape(
-                target_seq_len // self.downsample_factor, dim * self.downsample_factor
-            )
-            audio_enc_list.append(reshaped)
+        # 2. Down‑sample + adapter
+        audio_embs, audio_mask, max_T = [], [], 0
+        for seq in enc_out:
+            ds = self._downsample(seq)
+            audio_embs.append(ds)
+            max_T = max(max_T, ds.size(0))
 
-        ready_for_adapter = torch.cat(audio_enc_list, dim=0)
+        for i, ds in enumerate(audio_embs):
+            pad = max_T - ds.size(0)
+            audio_mask.append(
+                torch.cat(
+                    [
+                        torch.ones(ds.size(0), dtype=torch.long, device=device),
+                        torch.zeros(pad, dtype=torch.long, device=device),
+                    ]
+                )
+            )
+            if pad:
+                audio_embs[i] = F.pad(ds, (0, 0, 0, pad))
+        audio_embeddings = torch.stack(audio_embs, 0)
+        audio_mask = torch.stack(audio_mask, 0)
+        audio_embeddings = self.adapter(audio_embeddings)
 
-        adapter_out = self.adapter(ready_for_adapter)
-
-        audio_embeddings_list = list(
-            torch.split(adapter_out, [a.shape[0] for a in audio_enc_list], dim=0)
+        # 3. Токены
+        emb_bos, emb_sa, emb_ea = (
+            self._tok_embed(t, B, device)
+            for t in (self.bos_id, self.audio_start_id, self.audio_end_id)
         )
 
-        audio_embeddings = torch.stack(audio_embeddings_list, dim=0)
-
-        def expand_embed(token_id):
-            idx = torch.full((B, 1), token_id, device=device, dtype=torch.long)
-            return self.llm.get_input_embeddings()(idx)
-
-        emb_bos = expand_embed(self.bos_id)
-        emb_sa = expand_embed(self.audio_start_id)
-        emb_ea = expand_embed(self.audio_end_id)
-
-        inputs_embeds = torch.cat(
+        inputs_embeds = torch.cat([emb_bos, emb_sa, audio_embeddings, emb_ea], dim=1)
+        att_mask = torch.cat(
             [
-                emb_bos,  # (B, 1, d)
-                emb_sa,  # (B, 1, d)
-                audio_embeddings,  # (B, reduced_seq, d)
-                emb_ea,  # (B, 1, d)
+                torch.ones(B, 1, dtype=torch.long, device=device),
+                torch.ones(B, 1, dtype=torch.long, device=device),
+                audio_mask,
+                torch.ones(B, 1, dtype=torch.long, device=device),
             ],
             dim=1,
         )
 
-        ones = lambda n: torch.ones(B, n, device=device, dtype=torch.float32)
-        attention_mask = torch.cat(
-            [
-                ones(1),  # bos
-                ones(1),  # start_audio
-                ones(audio_embeddings.size(1)),  # аудио
-                ones(1),  # end_audio
-            ],
-            dim=1,
-        )
-
-        generated_ids = self.llm.generate(
+        pad_id = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id
+        gen_ids = self.llm.generate(
             inputs_embeds=inputs_embeds,
-            attention_mask=attention_mask,
+            attention_mask=att_mask,
             max_new_tokens=max_new_tokens,
-            eos_token_id=self.tokenizer.eos_token_id,
-            pad_token_id=self.tokenizer.pad_token_id
-            if self.tokenizer.pad_token_id is not None
-            else self.tokenizer.eos_token_id,
+            # eos_token_id=self.tokenizer.eos_token_id,
+            eos_token_id=151645,
+            pad_token_id=pad_id,
             **kwargs,
         )
-
-        transcripts = self.tokenizer.batch_decode(
-            generated_ids, skip_special_tokens=True
-        )
-
-        if is_single:
-            return transcripts[0]
-        return transcripts
+        txt = self.tokenizer.batch_decode(gen_ids, skip_special_tokens=True)
+        return txt[0] if single else txt

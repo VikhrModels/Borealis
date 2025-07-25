@@ -9,15 +9,12 @@ class BorealisBaseDataset(Dataset):
         self,
         audio_processor: WhisperFeatureExtractor,
         text_tokenizer: PreTrainedTokenizer,
-        audios: List[Dict[str, Any]],
-        texts: List[str],
+        hf_ds,  
         max_seconds_len: float = 30.0,
         sampling_rate: int = 16_000,
         max_text_len: int = 512,
     ):
         super().__init__()
-        assert len(audios) == len(texts), "Число аудио и текстов должно совпадать"
-
         self.real_max_len = int(max_seconds_len * sampling_rate)
         self.sr = sampling_rate
         self.text_max_len = max_text_len
@@ -25,21 +22,22 @@ class BorealisBaseDataset(Dataset):
         self.audio_processor = audio_processor
         self.tokenizer = text_tokenizer
 
-        self.audios = audios
-        self.texts = texts
+        self.hf_ds = hf_ds
 
     def __len__(self) -> int:
-        return len(self.texts)
+        return len(self.hf_ds)
 
     def __getitem__(self, index):
-        audio_sample = self.audios[index]["array"]
-        text_sample = self.texts[index]
+        example = self.hf_ds[index]
+        audio_sample = example["audio"]["array"]
+        text_sample = example["text"]
 
         proc = self.audio_processor(
             audio_sample,
             sampling_rate=self.sr,
             padding="max_length",
             max_length=self.real_max_len,
+            truncation=True,
             return_attention_mask=True,
             return_tensors="pt",
         )

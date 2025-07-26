@@ -28,6 +28,7 @@ class BorealisForConditionalGeneration(nn.Module):
         self,
         whisper_encoder_name: str = "openai/whisper-large-v3",
         llm_name: str = "Qwen/Qwen2.5-0.5B",
+        language_model=None,
         tokenizer=None,
         downsample_factor: int = 4,
     ):
@@ -38,12 +39,17 @@ class BorealisForConditionalGeneration(nn.Module):
         self.encoder: WhisperModel = WhisperModel.from_pretrained(
             whisper_encoder_name
         ).encoder
+        self.encoder.to(torch.bfloat16)
         self.encoder.eval()
         for p in self.encoder.parameters():
             p.requires_grad = False
 
         # ─── LLM ────────────────────────────────────────────────────────────────
-        self.llm = AutoModelForCausalLM.from_pretrained(llm_name)
+        # self.llm = AutoModelForCausalLM.from_pretrained(llm_name)
+        # self.tokenizer = tokenizer
+        # self.llm.resize_token_embeddings(len(tokenizer))
+
+        self.llm = language_model
         self.tokenizer = tokenizer
         self.llm.resize_token_embeddings(len(tokenizer))
 
@@ -53,6 +59,8 @@ class BorealisForConditionalGeneration(nn.Module):
             hidden_size=self.encoder.config.d_model * downsample_factor,
             dim=self.llm.config.hidden_size,
         )
+
+        self.adapter.to(torch.bfloat16)
 
         # ─── ID спец‑токенов ────────────────────────────────────────────────────
         self.bos_id = tokenizer.convert_tokens_to_ids("<|im_start|>")
@@ -168,9 +176,13 @@ class BorealisForConditionalGeneration(nn.Module):
         max_new_tokens: int = 512,
         **kwargs,
     ):
+        return_tokens = kwargs.pop("return_tokens", False)
+
         single = mel.dim() == 2
         if single:
             mel, att_mask = mel.unsqueeze(0), att_mask.unsqueeze(0)
+
+        mel = mel.to(torch.bfloat16)
 
         B, device = mel.size(0), mel.device
 
@@ -219,15 +231,16 @@ class BorealisForConditionalGeneration(nn.Module):
             dim=1,
         )
 
-        pad_id = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id
         gen_ids = self.llm.generate(
             inputs_embeds=inputs_embeds,
             attention_mask=att_mask,
             max_new_tokens=max_new_tokens,
-            # eos_token_id=self.tokenizer.eos_token_id,
-            eos_token_id=151645,
-            pad_token_id=pad_id,
+            eos_token_id=self.tokenizer.eos_token_id,
             **kwargs,
         )
-        txt = self.tokenizer.batch_decode(gen_ids, skip_special_tokens=True)
-        return txt[0] if single else txt
+
+        if return_tokens:  
+            return gen_ids[0] if single else gen_ids
+        else:
+            txt = self.tokenizer.batch_decode(gen_ids, skip_special_tokens=True)
+            return txt[0] if single else txt

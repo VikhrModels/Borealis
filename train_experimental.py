@@ -1,3 +1,7 @@
+import os
+
+os.environ["UNSLOTH_DISABLE_FAST_GENERATION"] = "1"
+
 from unsloth import FastModel
 from datasets import load_dataset, Audio, concatenate_datasets
 from transformers import WhisperFeatureExtractor, Qwen2ForCausalLM
@@ -5,6 +9,10 @@ from borealis.dataset import BorealisBaseDataset
 from borealis.utils import AudioCollator
 from borealis.modeling import BorealisForConditionalGeneration
 from transformers import TrainingArguments, Trainer
+import jiwer
+import numpy as np
+import torch
+import random
 
 
 ds_one = load_dataset("Vikhrmodels/ToneBooksPlus", num_proc=8)
@@ -116,26 +124,103 @@ training_args = TrainingArguments(
     output_dir="./asr_qwen_ckpts",
     per_device_train_batch_size=32,
     per_device_eval_batch_size=32,
-    # gradient_accumulation_steps=1,
-    # eval_accumulation_steps=1,
+    save_total_limit=7,
+    dataloader_num_workers=8,
     num_train_epochs=3,
     learning_rate=3e-4,
     bf16=True,
     eval_strategy="steps",
     save_strategy="steps",
-    eval_steps=1000,
+    eval_steps=500,
     save_steps=10000,
     logging_steps=50,
     report_to="wandb",
     save_safetensors=False,
 )
 
-trainer = Trainer(
+
+class CustomTrainer(Trainer):
+    def __init__(self, *args, gen_kwargs=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.gen_kwargs = gen_kwargs or {
+            "max_new_tokens": 320,
+            "do_sample": False,
+            "num_beams": 5,
+            "early_stopping": True,
+        }
+
+    def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
+        if prediction_loss_only:
+            return super().prediction_step(
+                model, inputs, prediction_loss_only, ignore_keys
+            )
+
+        inputs = self._prepare_inputs(inputs)
+
+        has_labels = "labels" in inputs
+        labels = inputs["labels"] if has_labels else None
+
+        with torch.no_grad():
+            if has_labels:
+                outputs = model(**inputs)
+                loss = outputs[0]
+            else:
+                loss = None
+
+            gen_inputs = {
+                k: v
+                for k, v in inputs.items()
+                if k != "labels" and k != "text_att_mask"
+            }
+            gen_inputs["att_mask"] = gen_inputs.pop("audio_att_mask")
+
+            generated_ids = model.generate(
+                **gen_inputs, return_tokens=True, #**self.gen_kwargs
+            )  # Изменено: добавлен return_tokens=True
+
+        return (loss, generated_ids, labels)
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred.predictions, eval_pred.label_ids
+
+    print(f"Min/Max predictions: {predictions.min()}, {predictions.max()}")
+
+    predictions = np.clip(predictions, 0, len(tokenizer) - 1) # Фикс выхода за границы токенов
+    predictions = np.where(predictions == -100, tokenizer.pad_token_id, predictions)
+
+    
+
+    decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
+    decoded_preds = [
+        pred.lower() for pred in decoded_preds
+    ]  
+
+    labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+    decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+    decoded_labels = [
+        label.lower() for label in decoded_labels
+    ]  
+
+    
+    if len(decoded_preds) > 1:  
+        indices = random.sample(range(len(decoded_preds)), 2)
+        for i in indices:
+            print(f"Reference: {decoded_labels[i]}\nGenerated: {decoded_preds[i]}\n")
+
+    wer_score = jiwer.wer(decoded_labels, decoded_preds)
+    cer_score = jiwer.cer(decoded_labels, decoded_preds)
+
+    return {"wer": wer_score, "cer": cer_score}
+
+
+trainer = CustomTrainer(
     model=model,
     args=training_args,
     train_dataset=train_dataset,
     eval_dataset=eval_dataset,
     data_collator=collator,
+    compute_metrics=compute_metrics,
 )
 
 

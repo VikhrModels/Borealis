@@ -2,7 +2,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import WhisperModel, AutoModelForCausalLM
+from transformers import WhisperModel
 
 
 class AudioLanguageAdapter(nn.Module):

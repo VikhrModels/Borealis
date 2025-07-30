@@ -7,8 +7,6 @@ from datasets import load_dataset, Audio, concatenate_datasets
 from transformers import (
     WhisperFeatureExtractor,
     Qwen2ForCausalLM,
-    AutoTokenizer,
-    AutoModelForCausalLM,
 )
 from borealis.dataset import BorealisBaseDataset
 from borealis.utils import AudioCollator

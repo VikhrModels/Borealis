@@ -1,7 +1,5 @@
 from torch.utils.data import Dataset
-import torch
 from transformers import WhisperFeatureExtractor, PreTrainedTokenizer
-from typing import List, Dict, Any, Optional
 
 
 class BorealisBaseDataset(Dataset):

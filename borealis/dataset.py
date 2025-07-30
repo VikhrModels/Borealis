@@ -9,7 +9,7 @@ class BorealisBaseDataset(Dataset):
         self,
         audio_processor: WhisperFeatureExtractor,
         text_tokenizer: PreTrainedTokenizer,
-        hf_ds,  
+        hf_ds,
         max_seconds_len: float = 30.0,
         sampling_rate: int = 16_000,
         max_text_len: int = 512,
@@ -42,8 +42,24 @@ class BorealisBaseDataset(Dataset):
             return_tensors="pt",
         )
 
+        messages = [
+            {
+                "role": "system",
+                "content": "Вы полезный помощник по автоматическому распознаванию речи. Точно транскрибируйте аудио в текст.",
+            },
+            {
+                "role": "user",
+                "content": "Транскрибируйте это аудио: <|start_of_audio|><|end_of_audio|>",
+            },
+            {"role": "assistant", "content": text_sample},
+        ]
+
+        chat_text = self.tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=False
+        )
+
         tokenized = self.tokenizer(
-            text_sample + self.tokenizer.eos_token,
+            chat_text,
             padding="max_length",
             truncation=True,
             max_length=self.text_max_len,
@@ -56,7 +72,3 @@ class BorealisBaseDataset(Dataset):
             "labels": tokenized.input_ids.squeeze(0),
             "text_att_mask": tokenized.attention_mask.squeeze(0),
         }
-
-
-class BorealisInstrustDataset(Dataset):
-    pass

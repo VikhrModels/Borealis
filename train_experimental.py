@@ -94,15 +94,6 @@ language_model, tokenizer = FastModel.from_pretrained(
     full_finetuning=True,
 )
 
-# language_model = AutoModelForCausalLM.from_pretrained(
-#     "Qwen/Qwen2.5-0.5B",
-#     torch_dtype=torch.bfloat16,
-#     device_map="auto",
-#     trust_remote_code=True,
-# )
-
-# tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-0.5B")
-
 
 start_audio_token = "<|start_of_audio|>"
 end_audio_token = "<|end_of_audio|>"
@@ -197,35 +188,35 @@ class CustomTrainer(Trainer):
 
         return (loss, generated_ids, labels)
 
+def extract_assistant_content(text: str) -> str:
+    if "assistant\n" in text:
+        return text.split("assistant\n")[-1].strip()
+    return text.strip()
+
 
 def compute_metrics(eval_pred):
     predictions, labels = eval_pred.predictions, eval_pred.label_ids
 
     print(f"Min/Max predictions: {predictions.min()}, {predictions.max()}")
 
+    
+    predictions = np.where(predictions == -100, tokenizer.pad_token_id, predictions)
+    
     predictions = np.clip(predictions, 0, len(tokenizer) - 1)
+    
     predictions = np.where(predictions == -100, tokenizer.pad_token_id, predictions)
 
     decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
-    decoded_preds = [pred.lower() for pred in decoded_preds]
+    decoded_preds = [extract_assistant_content(pred).lower() for pred in decoded_preds]
 
-    labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+    labels = np.where(labels == -100, tokenizer.pad_token_id, labels) 
     decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
-    decoded_labels = [label.lower() for label in decoded_labels]
+    decoded_labels = [extract_assistant_content(label).lower() for label in decoded_labels]
 
     if len(decoded_preds) > 1:
         indices = random.sample(range(len(decoded_preds)), 2)
         for i in indices:
             print(f"Reference: {decoded_labels[i]}\nGenerated: {decoded_preds[i]}\n")
-
-    # Печатаем сырые предсказания модели со специальными токенами
-    # raw_preds = tokenizer.batch_decode(predictions, skip_special_tokens=False)
-    # raw_refs = tokenizer.batch_decode(labels, skip_special_tokens=False)
-    # print("Raw predictions with special tokens:")
-    # if len(raw_preds) > 1:
-    #     indices = random.sample(range(len(raw_preds)), 2)
-    #     for i in indices:
-    #         print(f"Raw reference: {raw_refs[i]}\nGenerated: {raw_preds[i]}\n")
 
     wer_score = jiwer.wer(decoded_labels, decoded_preds)
     cer_score = jiwer.cer(decoded_labels, decoded_preds)

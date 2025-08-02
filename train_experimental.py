@@ -4,7 +4,10 @@ os.environ["UNSLOTH_DISABLE_FAST_GENERATION"] = "1"
 
 from unsloth import FastModel
 from datasets import load_dataset, Audio, concatenate_datasets
-from transformers import WhisperFeatureExtractor, Qwen2ForCausalLM
+from transformers import (
+    WhisperFeatureExtractor,
+    Qwen2ForCausalLM,
+)
 from borealis.dataset import BorealisBaseDataset
 from borealis.utils import AudioCollator
 from borealis.modeling import BorealisForConditionalGeneration
@@ -81,10 +84,9 @@ combined_val = combined_val.cast_column(
 
 whisper_encoder = WhisperFeatureExtractor.from_pretrained("openai/whisper-large-v3")
 
-# tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-0.5B")
 
 language_model, tokenizer = FastModel.from_pretrained(
-    model_name="Qwen/Qwen2.5-0.5B",
+    model_name="Qwen/Qwen2.5-0.5B-Instruct",
     dtype=None,
     auto_model=Qwen2ForCausalLM,
     full_finetuning=True,
@@ -125,17 +127,20 @@ training_args = TrainingArguments(
     per_device_train_batch_size=32,
     per_device_eval_batch_size=32,
     save_total_limit=7,
-    dataloader_num_workers=8,
+    dataloader_num_workers=16,
     num_train_epochs=3,
+    warmup_steps=3000,
     learning_rate=3e-4,
     bf16=True,
     eval_strategy="steps",
     save_strategy="steps",
-    eval_steps=500,
+    eval_steps=1500,
     save_steps=10000,
     logging_steps=50,
     report_to="wandb",
     save_safetensors=False,
+    optim="adamw_torch",
+    lr_scheduler_type="cosine"
 )
 
 
@@ -147,6 +152,7 @@ class CustomTrainer(Trainer):
             "do_sample": False,
             "num_beams": 5,
             "early_stopping": True,
+            "repetition_penalty": 1.2,
         }
 
     def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
@@ -160,7 +166,7 @@ class CustomTrainer(Trainer):
         has_labels = "labels" in inputs
         labels = inputs["labels"] if has_labels else None
 
-        with torch.no_grad():
+        with torch.inference_mode():
             if has_labels:
                 outputs = model(**inputs)
                 loss = outputs[0]
@@ -175,10 +181,15 @@ class CustomTrainer(Trainer):
             gen_inputs["att_mask"] = gen_inputs.pop("audio_att_mask")
 
             generated_ids = model.generate(
-                **gen_inputs, return_tokens=True, #**self.gen_kwargs
-            )  # Изменено: добавлен return_tokens=True
+                **gen_inputs, return_tokens=True, **self.gen_kwargs
+            )
 
         return (loss, generated_ids, labels)
+
+def extract_assistant_content(text: str) -> str:
+    if "assistant\n" in text:
+        return text.split("assistant\n")[-1].strip()
+    return text.strip()
 
 
 def compute_metrics(eval_pred):
@@ -186,24 +197,21 @@ def compute_metrics(eval_pred):
 
     print(f"Min/Max predictions: {predictions.min()}, {predictions.max()}")
 
-    predictions = np.clip(predictions, 0, len(tokenizer) - 1) # Фикс выхода за границы токенов
+    
+    predictions = np.where(predictions == -100, tokenizer.pad_token_id, predictions)
+    
+    predictions = np.clip(predictions, 0, len(tokenizer) - 1)
+    
     predictions = np.where(predictions == -100, tokenizer.pad_token_id, predictions)
 
-    
-
     decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
-    decoded_preds = [
-        pred.lower() for pred in decoded_preds
-    ]  
+    decoded_preds = [extract_assistant_content(pred).lower() for pred in decoded_preds]
 
-    labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+    labels = np.where(labels == -100, tokenizer.pad_token_id, labels) 
     decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
-    decoded_labels = [
-        label.lower() for label in decoded_labels
-    ]  
+    decoded_labels = [extract_assistant_content(label).lower() for label in decoded_labels]
 
-    
-    if len(decoded_preds) > 1:  
+    if len(decoded_preds) > 1:
         indices = random.sample(range(len(decoded_preds)), 2)
         for i in indices:
             print(f"Reference: {decoded_labels[i]}\nGenerated: {decoded_preds[i]}\n")

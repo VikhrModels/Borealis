@@ -128,6 +128,7 @@ training_args = TrainingArguments(
     logging_steps=50,
     report_to="wandb",
     save_safetensors=False,
+    lr_scheduler_type="cosine",
 )
 
 trainer = Trainer(

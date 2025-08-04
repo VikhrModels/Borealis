@@ -17,11 +17,26 @@ import numpy as np
 import torch
 import random
 
+from audiomentations import (
+    Compose,
+    AddBackgroundNoise,
+    AddGaussianNoise,
+    ApplyImpulseResponse,
+    PitchShift,
+    Gain,
+    Mp3Compression,
+    ClippingDistortion,
+    BandPassFilter,
+)
+
 
 ds_one = load_dataset("Vikhrmodels/ToneBooksPlus", num_proc=8)
 ds_two = load_dataset("Vikhrmodels/ToneSpeak", num_proc=8)
 ds_three = load_dataset("Vikhrmodels/ToneWebinars", num_proc=8)
 ds_four = load_dataset("Vikhrmodels/ToneRuLS", num_proc=8)
+ds_five = load_dataset("Vikhrmodels/ToneSlavic", num_proc=8)
+
+ds_five = ds_five.rename_column("sentence", "text")
 
 ds_one["train"] = ds_one["train"].cast_column(
     "audio", Audio(sampling_rate=None, decode=True)
@@ -35,13 +50,16 @@ ds_three["train"] = ds_three["train"].cast_column(
 ds_four["train"] = ds_four["train"].cast_column(
     "audio", Audio(sampling_rate=None, decode=True)
 )
-
+ds_five["train"] = ds_five["train"].cast_column(
+    "audio", Audio(sampling_rate=None, decode=True)
+)
 
 train_ds_list = [
     ds_one["train"].select_columns(["audio", "text"]),
     ds_two["train"].select_columns(["audio", "text"]),
     ds_three["train"].select_columns(["audio", "text"]),
     ds_four["train"].select_columns(["audio", "text"]),
+    ds_five["train"].select_columns(["audio", "text"]),
 ]
 
 combined_train = concatenate_datasets(train_ds_list)
@@ -61,6 +79,9 @@ ds_three["validation"] = ds_three["validation"].cast_column(
 ds_four["validation"] = ds_four["validation"].cast_column(
     "audio", Audio(sampling_rate=None, decode=True)
 )
+ds_five["validation"] = ds_five["validation"].cast_column(
+    "audio", Audio(sampling_rate=None, decode=True)
+)
 
 val_ds_one = ds_one["validation"].select_columns(["audio", "text"]).select(range(79))
 val_ds_two = ds_two["validation"].select_columns(["audio", "text"]).select(range(79))
@@ -68,6 +89,7 @@ val_ds_three = (
     ds_three["validation"].select_columns(["audio", "text"]).select(range(79))
 )
 val_ds_four = ds_four["validation"].select_columns(["audio", "text"]).select(range(79))
+val_ds_five = ds_five["validation"].select_columns(["audio", "text"]).select(range(79))
 
 combined_val = concatenate_datasets(
     [
@@ -75,6 +97,7 @@ combined_val = concatenate_datasets(
         val_ds_two,
         val_ds_three,
         val_ds_four,
+        val_ds_five,
     ]
 )
 combined_val = combined_val.cast_column(
@@ -100,12 +123,36 @@ tokenizer.add_special_tokens(
     {"additional_special_tokens": [start_audio_token, end_audio_token]}
 )
 
+augment = Compose(
+    [
+        AddBackgroundNoise(
+            sounds_path="/home/alexw/Project_Audio/Borealis/data_for_augs/musan/flattened_16khz/",
+            min_snr_db=3.0,
+            max_snr_db=30.0,
+            p=0.5,
+        ),
+        AddGaussianNoise(min_amplitude=0.001, max_amplitude=0.015, p=0.5),
+        ApplyImpulseResponse(ir_path="/home/alexw/Project_Audio/Borealis/data_for_augs/EchoThiefImpulseResponseLibrary/flattened_16khz/", p=0.5),
+        PitchShift(min_semitones=-4, max_semitones=4, p=0.5),
+        Gain(min_gain_db=-6, max_gain_db=6, p=0.5),
+        Mp3Compression(min_bitrate=48, max_bitrate=320, p=0.3),
+        ClippingDistortion(
+            min_percentile_threshold=20, max_percentile_threshold=40, p=0.3
+        ),
+        BandPassFilter(
+            min_center_freq=1500, max_center_freq=4000, min_bandwidth_fraction=1.0, max_bandwidth_fraction=1.99, p=0.3
+        ),
+    ],
+    shuffle=True,
+)
+
 
 train_dataset = BorealisBaseDataset(
     audio_processor=whisper_encoder,
     text_tokenizer=tokenizer,
     hf_ds=combined_train,
     max_text_len=320,
+    augmentations=augment,
 )
 
 eval_dataset = BorealisBaseDataset(
@@ -113,6 +160,7 @@ eval_dataset = BorealisBaseDataset(
     text_tokenizer=tokenizer,
     hf_ds=combined_val,
     max_text_len=320,
+    augmentations=None,
 )
 
 
@@ -140,7 +188,7 @@ training_args = TrainingArguments(
     report_to="wandb",
     save_safetensors=False,
     optim="adamw_torch",
-    lr_scheduler_type="cosine"
+    lr_scheduler_type="cosine",
 )
 
 
@@ -186,6 +234,7 @@ class CustomTrainer(Trainer):
 
         return (loss, generated_ids, labels)
 
+
 def extract_assistant_content(text: str) -> str:
     if "assistant\n" in text:
         return text.split("assistant\n")[-1].strip()
@@ -197,19 +246,20 @@ def compute_metrics(eval_pred):
 
     print(f"Min/Max predictions: {predictions.min()}, {predictions.max()}")
 
-    
     predictions = np.where(predictions == -100, tokenizer.pad_token_id, predictions)
-    
+
     predictions = np.clip(predictions, 0, len(tokenizer) - 1)
-    
+
     predictions = np.where(predictions == -100, tokenizer.pad_token_id, predictions)
 
     decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
     decoded_preds = [extract_assistant_content(pred).lower() for pred in decoded_preds]
 
-    labels = np.where(labels == -100, tokenizer.pad_token_id, labels) 
+    labels = np.where(labels == -100, tokenizer.pad_token_id, labels)
     decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
-    decoded_labels = [extract_assistant_content(label).lower() for label in decoded_labels]
+    decoded_labels = [
+        extract_assistant_content(label).lower() for label in decoded_labels
+    ]
 
     if len(decoded_preds) > 1:
         indices = random.sample(range(len(decoded_preds)), 2)

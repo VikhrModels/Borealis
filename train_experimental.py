@@ -9,7 +9,7 @@ from transformers import (
     Qwen2ForCausalLM,
 )
 from borealis.dataset import BorealisBaseDataset
-from borealis.utils import AudioCollator
+from borealis.utils import AudioCollator, _filter_and_report
 from borealis.modeling import BorealisForConditionalGeneration
 from transformers import TrainingArguments, Trainer, TrainerCallback
 import jiwer
@@ -37,7 +37,7 @@ ds_four = load_dataset("Vikhrmodels/ToneRuLS", num_proc=8)
 ds_five = load_dataset("Vikhrmodels/ToneSlavic", num_proc=8)
 ds_five = ds_five.filter(
     lambda ex: ex.get("locale") is not None and "ru" in str(ex["locale"]).lower(),
-    num_proc=8,
+    num_proc=20,
 )
 
 ds_five = ds_five.rename_column("sentence", "text")
@@ -87,13 +87,13 @@ ds_five["validation"] = ds_five["validation"].cast_column(
     "audio", Audio(sampling_rate=None, decode=True)
 )
 
-val_ds_one = ds_one["validation"].select_columns(["audio", "text"]).select(range(79))
-val_ds_two = ds_two["validation"].select_columns(["audio", "text"]).select(range(79))
+val_ds_one = ds_one["validation"].select_columns(["audio", "text"]).select(range(279))
+val_ds_two = ds_two["validation"].select_columns(["audio", "text"]).select(range(279))
 val_ds_three = (
-    ds_three["validation"].select_columns(["audio", "text"]).select(range(79))
+    ds_three["validation"].select_columns(["audio", "text"]).select(range(279))
 )
-val_ds_four = ds_four["validation"].select_columns(["audio", "text"]).select(range(79))
-val_ds_five = ds_five["validation"].select_columns(["audio", "text"]).select(range(79))
+val_ds_four = ds_four["validation"].select_columns(["audio", "text"]).select(range(279))
+val_ds_five = ds_five["validation"].select_columns(["audio", "text"]).select(range(279))
 
 combined_val = concatenate_datasets(
     [
@@ -107,6 +107,9 @@ combined_val = concatenate_datasets(
 combined_val = combined_val.cast_column(
     "audio", Audio(decode=True, sampling_rate=16_000)
 )
+
+combined_train = _filter_and_report(combined_train, "train")
+combined_val = _filter_and_report(combined_val, "validation")
 
 # ---------------- models ----------------
 
@@ -128,8 +131,10 @@ tokenizer.add_special_tokens(
 
 # ---------------- augmentations ----------------
 
-NOISE_PATH = "/home/alexw/Project_Audio/Borealis/data_for_augs/musan/flattened_16khz/"
-IR_PATH = "/home/alexw/Project_Audio/Borealis/data_for_augs/EchoThiefImpulseResponseLibrary/flattened_16khz/"
+NOISE_PATH = "/workspace/Borealis/data_for_augs/musan/flattened_16khz/"
+IR_PATH = (
+    "/workspace/Borealis/data_for_augs/EchoThiefImpulseResponseLibrary/flattened_16khz/"
+)
 
 
 def build_augment(
@@ -221,8 +226,8 @@ training_args = TrainingArguments(
     output_dir="./asr_qwen_ckpts",
     per_device_train_batch_size=32,
     per_device_eval_batch_size=32,
+    dataloader_num_workers=26,
     save_total_limit=7,
-    dataloader_num_workers=16,
     num_train_epochs=5,
     warmup_ratio=0.05,
     learning_rate=3e-4,

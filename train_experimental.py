@@ -26,6 +26,11 @@ from audiomentations import (
     Mp3Compression,
     OneOf,
     Normalize,
+    Aliasing,
+    SevenBandParametricEQ,
+    Resample,
+    HighPassFilter,
+    LowPassFilter,
 )
 
 # ---------------- data ----------------
@@ -54,8 +59,12 @@ ds_nine = ds_nine.remove_columns(["episode", "title"])
 ds_ten = ds_ten.remove_columns(["original_text"])
 ds_eleven = ds_eleven.remove_columns(["original_text"])
 
-ds_ten = ds_ten.filter(lambda example: example['text'] is not None and example['text'].strip() != "")
-ds_eleven = ds_eleven.filter(lambda example: example['text'] is not None and example['text'].strip() != "")
+ds_ten = ds_ten.filter(
+    lambda example: example["text"] is not None and example["text"].strip() != ""
+)
+ds_eleven = ds_eleven.filter(
+    lambda example: example["text"] is not None and example["text"].strip() != ""
+)
 
 ds_one["train"] = ds_one["train"].cast_column(
     "audio", Audio(sampling_rate=None, decode=True)
@@ -81,9 +90,7 @@ ds_seven["train"] = ds_seven["train"].cast_column(
 ds_eight["train"] = ds_eight["train"].cast_column(
     "audio", Audio(sampling_rate=None, decode=True)
 )
-ds_nine = ds_nine.cast_column(
-    "audio", Audio(sampling_rate=None, decode=True)
-)
+ds_nine = ds_nine.cast_column("audio", Audio(sampling_rate=None, decode=True))
 ds_ten["train"] = ds_ten["train"].cast_column(
     "audio", Audio(sampling_rate=None, decode=True)
 )
@@ -152,11 +159,17 @@ val_ds_three = (
 val_ds_four = ds_four["validation"].select_columns(["audio", "text"]).select(range(279))
 val_ds_five = ds_five["validation"].select_columns(["audio", "text"]).select(range(279))
 val_ds_six = ds_six["validation"].select_columns(["audio", "text"]).select(range(279))
-val_ds_seven = ds_seven["validation"].select_columns(["audio", "text"]).select(range(279))
-val_ds_eight = ds_eight["validation"].select_columns(["audio", "text"]).select(range(279))
+val_ds_seven = (
+    ds_seven["validation"].select_columns(["audio", "text"]).select(range(279))
+)
+val_ds_eight = (
+    ds_eight["validation"].select_columns(["audio", "text"]).select(range(279))
+)
 val_ds_nine = ds_nine["validation"].select_columns(["audio", "text"]).select(range(20))
-val_ds_ten = ds_ten["validation"].select_columns(["audio", "text"]).select(range(20))
-val_ds_eleven = ds_eleven["validation"].select_columns(["audio", "text"]).select(range(20))
+val_ds_ten = ds_ten["validation"].select_columns(["audio", "text"]).select(range(279))
+val_ds_eleven = (
+    ds_eleven["validation"].select_columns(["audio", "text"]).select(range(279))
+)
 
 combined_val = concatenate_datasets(
     [
@@ -189,6 +202,7 @@ language_model, tokenizer = FastModel.from_pretrained(
     dtype=None,
     auto_model=Qwen2ForCausalLM,
     full_finetuning=True,
+    device_map="balanced",
 )
 
 start_audio_token = "<|start_of_audio|>"
@@ -215,6 +229,20 @@ def build_augment(
     p_ir: float,
     p_mp3: float,
     overall_p: float = 0.5,
+    p_eq: float = 0.0,
+    eq_min_gain_db: float = -6.0,
+    eq_max_gain_db: float = 6.0,
+    alias_min_sr: int = 6000,
+    alias_max_sr: int = 14000,
+    p_hp: float = 0.0,
+    p_lp: float = 0.0,
+    hp_min_hz: float = 250.0,
+    hp_max_hz: float = 450.0,
+    lp_min_hz: float = 3200.0,
+    lp_max_hz: float = 4200.0,
+    p_resample: float = 0.0,
+    resample_min_sr: int = 6000,
+    resample_max_sr: int = 12000,
 ) -> Compose:
     return Compose(
         [
@@ -237,11 +265,30 @@ def build_augment(
                 ],
                 p=p_ir,
             ),
+            SevenBandParametricEQ(
+                min_gain_db=eq_min_gain_db,
+                max_gain_db=eq_max_gain_db,
+                p=p_eq,
+            ),
+            HighPassFilter(
+                min_cutoff_freq=hp_min_hz, max_cutoff_freq=hp_max_hz, p=p_hp
+            ),
+            LowPassFilter(min_cutoff_freq=lp_min_hz, max_cutoff_freq=lp_max_hz, p=p_lp),
             OneOf(
                 [
                     Mp3Compression(min_bitrate=64, max_bitrate=192, p=1.0),
+                    Aliasing(
+                        min_sample_rate=alias_min_sr,
+                        max_sample_rate=alias_max_sr,
+                        p=1.0,
+                    ),
+                    Resample(
+                        min_sample_rate=resample_min_sr,
+                        max_sample_rate=resample_max_sr,
+                        p=1.0,
+                    ),
                 ],
-                p=p_mp3,
+                p=p_mp3 + p_resample,
             ),
             Normalize(p=1.0, apply_to="all"),
         ],
@@ -399,13 +446,26 @@ class AugSchedule(TrainerCallback):
 
     def on_epoch_begin(self, args, state, control, **kwargs):
         ep = int(state.epoch or 0)
+
         if ep < 2:
             cfg = dict(
                 snr_min=15.0,
                 snr_max=25.0,
                 p_noise=0.4,
                 p_ir=0.0,
-                p_mp3=0.0,
+                p_mp3=0.10,
+                p_resample=0.10,
+                p_eq=0.30,
+                hp_min_hz=280.0,
+                hp_max_hz=420.0,
+                p_hp=0.20,
+                lp_min_hz=3400.0,
+                lp_max_hz=4000.0,
+                p_lp=0.20,
+                alias_min_sr=6000,
+                alias_max_sr=12000,
+                resample_min_sr=8000,
+                resample_max_sr=12000,
                 overall_p=0.5,
             )
         elif ep < 5:
@@ -414,7 +474,19 @@ class AugSchedule(TrainerCallback):
                 snr_max=22.0,
                 p_noise=0.5,
                 p_ir=0.2,
-                p_mp3=0.1,
+                p_mp3=0.15,
+                p_resample=0.15,
+                p_eq=0.40,
+                hp_min_hz=250.0,
+                hp_max_hz=450.0,
+                p_hp=0.30,
+                lp_min_hz=3200.0,
+                lp_max_hz=3800.0,
+                p_lp=0.30,
+                alias_min_sr=5000,
+                alias_max_sr=12000,
+                resample_min_sr=7000,
+                resample_max_sr=11000,
                 overall_p=0.5,
             )
         else:
@@ -423,15 +495,23 @@ class AugSchedule(TrainerCallback):
                 snr_max=20.0,
                 p_noise=0.6,
                 p_ir=0.3,
-                p_mp3=0.2,
+                p_mp3=0.20,
+                p_resample=0.20,
+                p_eq=0.50,
+                hp_min_hz=220.0,
+                hp_max_hz=450.0,
+                p_hp=0.40,
+                lp_min_hz=3000.0,
+                lp_max_hz=3600.0,
+                p_lp=0.40,
+                alias_min_sr=4000,
+                alias_max_sr=12000,
+                resample_min_sr=6000,
+                resample_max_sr=10000,
                 overall_p=0.5,
             )
 
-        self.dataset.augmentations = build_augment(
-            self.noise_path,
-            self.ir_path,
-            **cfg,
-        )
+        self.dataset.augmentations = build_augment(self.noise_path, self.ir_path, **cfg)
 
 
 trainer = CustomTrainer(
@@ -442,7 +522,6 @@ trainer = CustomTrainer(
     data_collator=collator,
     compute_metrics=compute_metrics,
 )
-
 
 trainer.add_callback(AugSchedule(train_dataset, NOISE_PATH, IR_PATH))
 

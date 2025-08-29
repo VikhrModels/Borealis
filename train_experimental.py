@@ -35,12 +35,27 @@ ds_two = load_dataset("Vikhrmodels/ToneSpeak", num_proc=8)
 ds_three = load_dataset("Vikhrmodels/ToneWebinars", num_proc=8)
 ds_four = load_dataset("Vikhrmodels/ToneRuLS", num_proc=8)
 ds_five = load_dataset("Vikhrmodels/ToneSlavic", num_proc=8)
+ds_six = load_dataset("Vikhrmodels/ToneRuDevices", num_proc=8)
+ds_seven = load_dataset("Vikhrmodels/ReadyFormatDF", num_proc=8)
+ds_eight = load_dataset("Vikhrmodels/ToneRuDevicesAudiobooks", num_proc=8)
+ds_nine = load_dataset("bond005/podlodka_speech", num_proc=8)
+ds_ten = load_dataset("Vikhrmodels/ToneGolosOpus", "Crowd", num_proc=8)
+ds_eleven = load_dataset("Vikhrmodels/ToneGolosOpus", "Farfield", num_proc=8)
+
 ds_five = ds_five.filter(
     lambda ex: ex.get("locale") is not None and "ru" in str(ex["locale"]).lower(),
     num_proc=20,
 )
-
 ds_five = ds_five.rename_column("sentence", "text")
+
+ds_nine = ds_nine.rename_column("transcription", "text")
+ds_nine = ds_nine.remove_columns(["episode", "title"])
+
+ds_ten = ds_ten.remove_columns(["original_text"])
+ds_eleven = ds_eleven.remove_columns(["original_text"])
+
+ds_ten = ds_ten.filter(lambda example: example['text'] is not None and example['text'].strip() != "")
+ds_eleven = ds_eleven.filter(lambda example: example['text'] is not None and example['text'].strip() != "")
 
 ds_one["train"] = ds_one["train"].cast_column(
     "audio", Audio(sampling_rate=None, decode=True)
@@ -57,6 +72,24 @@ ds_four["train"] = ds_four["train"].cast_column(
 ds_five["train"] = ds_five["train"].cast_column(
     "audio", Audio(sampling_rate=None, decode=True)
 )
+ds_six["train"] = ds_six["train"].cast_column(
+    "audio", Audio(sampling_rate=None, decode=True)
+)
+ds_seven["train"] = ds_seven["train"].cast_column(
+    "audio", Audio(sampling_rate=None, decode=True)
+)
+ds_eight["train"] = ds_eight["train"].cast_column(
+    "audio", Audio(sampling_rate=None, decode=True)
+)
+ds_nine = ds_nine.cast_column(
+    "audio", Audio(sampling_rate=None, decode=True)
+)
+ds_ten["train"] = ds_ten["train"].cast_column(
+    "audio", Audio(sampling_rate=None, decode=True)
+)
+ds_eleven["train"] = ds_eleven["train"].cast_column(
+    "audio", Audio(sampling_rate=None, decode=True)
+)
 
 train_ds_list = [
     ds_one["train"].select_columns(["audio", "text"]),
@@ -64,6 +97,12 @@ train_ds_list = [
     ds_three["train"].select_columns(["audio", "text"]),
     ds_four["train"].select_columns(["audio", "text"]),
     ds_five["train"].select_columns(["audio", "text"]),
+    ds_six["train"].select_columns(["audio", "text"]),
+    ds_seven["train"].select_columns(["audio", "text"]),
+    ds_eight["train"].select_columns(["audio", "text"]),
+    ds_nine["train"].select_columns(["audio", "text"]),
+    ds_ten["train"].select_columns(["audio", "text"]),
+    ds_eleven["train"].select_columns(["audio", "text"]),
 ]
 
 combined_train = concatenate_datasets(train_ds_list)
@@ -86,6 +125,24 @@ ds_four["validation"] = ds_four["validation"].cast_column(
 ds_five["validation"] = ds_five["validation"].cast_column(
     "audio", Audio(sampling_rate=None, decode=True)
 )
+ds_six["validation"] = ds_six["validation"].cast_column(
+    "audio", Audio(sampling_rate=None, decode=True)
+)
+ds_seven["validation"] = ds_seven["validation"].cast_column(
+    "audio", Audio(sampling_rate=None, decode=True)
+)
+ds_eight["validation"] = ds_eight["validation"].cast_column(
+    "audio", Audio(sampling_rate=None, decode=True)
+)
+ds_nine["validation"] = ds_nine["validation"].cast_column(
+    "audio", Audio(sampling_rate=None, decode=True)
+)
+ds_ten["validation"] = ds_ten["validation"].cast_column(
+    "audio", Audio(sampling_rate=None, decode=True)
+)
+ds_eleven["validation"] = ds_eleven["validation"].cast_column(
+    "audio", Audio(sampling_rate=None, decode=True)
+)
 
 val_ds_one = ds_one["validation"].select_columns(["audio", "text"]).select(range(279))
 val_ds_two = ds_two["validation"].select_columns(["audio", "text"]).select(range(279))
@@ -94,6 +151,12 @@ val_ds_three = (
 )
 val_ds_four = ds_four["validation"].select_columns(["audio", "text"]).select(range(279))
 val_ds_five = ds_five["validation"].select_columns(["audio", "text"]).select(range(279))
+val_ds_six = ds_six["validation"].select_columns(["audio", "text"]).select(range(279))
+val_ds_seven = ds_seven["validation"].select_columns(["audio", "text"]).select(range(279))
+val_ds_eight = ds_eight["validation"].select_columns(["audio", "text"]).select(range(279))
+val_ds_nine = ds_nine["validation"].select_columns(["audio", "text"]).select(range(20))
+val_ds_ten = ds_ten["validation"].select_columns(["audio", "text"]).select(range(20))
+val_ds_eleven = ds_eleven["validation"].select_columns(["audio", "text"]).select(range(20))
 
 combined_val = concatenate_datasets(
     [
@@ -102,6 +165,12 @@ combined_val = concatenate_datasets(
         val_ds_three,
         val_ds_four,
         val_ds_five,
+        val_ds_six,
+        val_ds_seven,
+        val_ds_eight,
+        val_ds_nine,
+        val_ds_ten,
+        val_ds_eleven,
     ]
 )
 combined_val = combined_val.cast_column(

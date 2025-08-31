@@ -1,6 +1,11 @@
 import os
 
 os.environ["UNSLOTH_DISABLE_FAST_GENERATION"] = "1"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 from unsloth import FastModel
 from datasets import load_dataset, Audio, concatenate_datasets
@@ -16,6 +21,8 @@ import jiwer
 import numpy as np
 import torch
 import random
+
+torch.backends.cudnn.benchmark = True
 
 from audiomentations import (
     Compose,
@@ -227,23 +234,71 @@ def build_augment(
     snr_max: float,
     p_noise: float,
     p_ir: float,
-    p_mp3: float,
+    p_eq: float,
+    eq_min_gain_db: float,
+    eq_max_gain_db: float,
+    p_heavy: float,
+    heavy_hp_prob: float,
+    heavy_lp_prob: float,
+    resample_min_sr: int,
+    resample_max_sr: int,
+    alias_min_sr: int,
+    alias_max_sr: int,
+    enable_mp3: bool,
+    mp3_min_bitrate: int,
+    mp3_max_bitrate: int,
     overall_p: float = 0.5,
-    p_eq: float = 0.0,
-    eq_min_gain_db: float = -6.0,
-    eq_max_gain_db: float = 6.0,
-    alias_min_sr: int = 6000,
-    alias_max_sr: int = 14000,
-    p_hp: float = 0.0,
-    p_lp: float = 0.0,
-    hp_min_hz: float = 250.0,
-    hp_max_hz: float = 450.0,
-    lp_min_hz: float = 3200.0,
-    lp_max_hz: float = 4200.0,
-    p_resample: float = 0.0,
-    resample_min_sr: int = 6000,
-    resample_max_sr: int = 12000,
 ) -> Compose:
+    heavy_transforms = [
+        Compose(
+            [
+                Resample(
+                    min_sample_rate=resample_min_sr,
+                    max_sample_rate=resample_max_sr,
+                    p=1.0,
+                ),
+                HighPassFilter(
+                    min_cutoff_freq=250.0, max_cutoff_freq=450.0, p=heavy_hp_prob
+                ),
+                LowPassFilter(
+                    min_cutoff_freq=3000.0, max_cutoff_freq=3800.0, p=heavy_lp_prob
+                ),
+            ],
+            p=1.0,
+        ),
+        Compose(
+            [
+                Aliasing(
+                    min_sample_rate=alias_min_sr, max_sample_rate=alias_max_sr, p=1.0
+                ),
+                HighPassFilter(
+                    min_cutoff_freq=250.0, max_cutoff_freq=450.0, p=heavy_hp_prob
+                ),
+                LowPassFilter(
+                    min_cutoff_freq=3000.0, max_cutoff_freq=3800.0, p=heavy_lp_prob
+                ),
+            ],
+            p=1.0,
+        ),
+    ]
+    if enable_mp3:
+        heavy_transforms.append(
+            Compose(
+                [
+                    Mp3Compression(
+                        min_bitrate=mp3_min_bitrate, max_bitrate=mp3_max_bitrate, p=1.0
+                    ),
+                    HighPassFilter(
+                        min_cutoff_freq=250.0, max_cutoff_freq=450.0, p=heavy_hp_prob
+                    ),
+                    LowPassFilter(
+                        min_cutoff_freq=3000.0, max_cutoff_freq=3800.0, p=heavy_lp_prob
+                    ),
+                ],
+                p=1.0,
+            )
+        )
+
     return Compose(
         [
             OneOf(
@@ -270,26 +325,7 @@ def build_augment(
                 max_gain_db=eq_max_gain_db,
                 p=p_eq,
             ),
-            HighPassFilter(
-                min_cutoff_freq=hp_min_hz, max_cutoff_freq=hp_max_hz, p=p_hp
-            ),
-            LowPassFilter(min_cutoff_freq=lp_min_hz, max_cutoff_freq=lp_max_hz, p=p_lp),
-            OneOf(
-                [
-                    Mp3Compression(min_bitrate=64, max_bitrate=192, p=1.0),
-                    Aliasing(
-                        min_sample_rate=alias_min_sr,
-                        max_sample_rate=alias_max_sr,
-                        p=1.0,
-                    ),
-                    Resample(
-                        min_sample_rate=resample_min_sr,
-                        max_sample_rate=resample_max_sr,
-                        p=1.0,
-                    ),
-                ],
-                p=p_mp3 + p_resample,
-            ),
+            OneOf(heavy_transforms, p=p_heavy),
             Normalize(p=1.0, apply_to="all"),
         ],
         shuffle=False,
@@ -302,10 +338,22 @@ augment = build_augment(
     IR_PATH,
     snr_min=15.0,
     snr_max=25.0,
-    p_noise=0.4,
+    p_noise=0.45,
     p_ir=0.0,
-    p_mp3=0.0,
-    overall_p=0.5,
+    p_eq=0.30,
+    eq_min_gain_db=-6.0,
+    eq_max_gain_db=6.0,
+    p_heavy=0.0,
+    heavy_hp_prob=0.0,
+    heavy_lp_prob=0.0,
+    resample_min_sr=9000,
+    resample_max_sr=12000,
+    alias_min_sr=7000,
+    alias_max_sr=11000,
+    enable_mp3=False,
+    mp3_min_bitrate=128,
+    mp3_max_bitrate=192,
+    overall_p=0.45,
 )
 
 # ---------------- datasets ----------------
@@ -342,7 +390,10 @@ training_args = TrainingArguments(
     output_dir="./asr_qwen_ckpts",
     per_device_train_batch_size=32,
     per_device_eval_batch_size=32,
-    dataloader_num_workers=26,
+    dataloader_num_workers=16,
+    dataloader_persistent_workers=True,
+    dataloader_prefetch_factor=4,
+    dataloader_pin_memory=True,
     save_total_limit=7,
     num_train_epochs=5,
     warmup_ratio=0.05,
@@ -438,6 +489,9 @@ def compute_metrics(eval_pred):
     return {"wer": wer_score, "cer": cer_score}
 
 
+# -------- расписание аугментаций (curriculum) --------
+
+
 class AugSchedule(TrainerCallback):
     def __init__(self, dataset, noise_path, ir_path):
         self.dataset = dataset
@@ -451,64 +505,64 @@ class AugSchedule(TrainerCallback):
             cfg = dict(
                 snr_min=15.0,
                 snr_max=25.0,
-                p_noise=0.4,
+                p_noise=0.45,
                 p_ir=0.0,
-                p_mp3=0.10,
-                p_resample=0.10,
                 p_eq=0.30,
-                hp_min_hz=280.0,
-                hp_max_hz=420.0,
-                p_hp=0.20,
-                lp_min_hz=3400.0,
-                lp_max_hz=4000.0,
-                p_lp=0.20,
-                alias_min_sr=6000,
-                alias_max_sr=12000,
-                resample_min_sr=8000,
+                eq_min_gain_db=-6.0,
+                eq_max_gain_db=6.0,
+                p_heavy=0.05,
+                heavy_hp_prob=0.50,
+                heavy_lp_prob=0.50,
+                resample_min_sr=9000,
                 resample_max_sr=12000,
-                overall_p=0.5,
+                alias_min_sr=7000,
+                alias_max_sr=11000,
+                enable_mp3=False,
+                mp3_min_bitrate=128,
+                mp3_max_bitrate=192,
+                overall_p=0.45,
             )
         elif ep < 5:
             cfg = dict(
                 snr_min=12.0,
                 snr_max=22.0,
-                p_noise=0.5,
-                p_ir=0.2,
-                p_mp3=0.15,
-                p_resample=0.15,
-                p_eq=0.40,
-                hp_min_hz=250.0,
-                hp_max_hz=450.0,
-                p_hp=0.30,
-                lp_min_hz=3200.0,
-                lp_max_hz=3800.0,
-                p_lp=0.30,
-                alias_min_sr=5000,
-                alias_max_sr=12000,
+                p_noise=0.50,
+                p_ir=0.18,
+                p_eq=0.38,
+                eq_min_gain_db=-9.0,
+                eq_max_gain_db=9.0,
+                p_heavy=0.14,
+                heavy_hp_prob=0.60,
+                heavy_lp_prob=0.60,
                 resample_min_sr=7000,
                 resample_max_sr=11000,
-                overall_p=0.5,
+                alias_min_sr=5000,
+                alias_max_sr=10000,
+                enable_mp3=True,
+                mp3_min_bitrate=96,
+                mp3_max_bitrate=160,
+                overall_p=0.50,
             )
         else:
             cfg = dict(
                 snr_min=10.0,
                 snr_max=20.0,
-                p_noise=0.6,
-                p_ir=0.3,
-                p_mp3=0.20,
-                p_resample=0.20,
-                p_eq=0.50,
-                hp_min_hz=220.0,
-                hp_max_hz=450.0,
-                p_hp=0.40,
-                lp_min_hz=3000.0,
-                lp_max_hz=3600.0,
-                p_lp=0.40,
-                alias_min_sr=4000,
-                alias_max_sr=12000,
+                p_noise=0.58,
+                p_ir=0.28,
+                p_eq=0.48,
+                eq_min_gain_db=-12.0,
+                eq_max_gain_db=12.0,
+                p_heavy=0.22,
+                heavy_hp_prob=0.75,
+                heavy_lp_prob=0.75,
                 resample_min_sr=6000,
                 resample_max_sr=10000,
-                overall_p=0.5,
+                alias_min_sr=4000,
+                alias_max_sr=9000,
+                enable_mp3=True,
+                mp3_min_bitrate=80,
+                mp3_max_bitrate=128,
+                overall_p=0.50,
             )
 
         self.dataset.augmentations = build_augment(self.noise_path, self.ir_path, **cfg)

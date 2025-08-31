@@ -68,11 +68,11 @@ ds_eleven = ds_eleven.remove_columns(["original_text"])
 
 ds_ten = ds_ten.filter(
     lambda example: example["text"] is not None and example["text"].strip() != "",
-    num_proc=20
+    num_proc=20,
 )
 ds_eleven = ds_eleven.filter(
     lambda example: example["text"] is not None and example["text"].strip() != "",
-    num_proc=20
+    num_proc=20,
 )
 
 ds_one["train"] = ds_one["train"].cast_column(
@@ -390,11 +390,11 @@ model = BorealisForConditionalGeneration(
 
 training_args = TrainingArguments(
     output_dir="./asr_qwen_ckpts",
-    per_device_train_batch_size=32,
-    per_device_eval_batch_size=32,
-    dataloader_num_workers=16,
+    per_device_train_batch_size=64,
+    per_device_eval_batch_size=64,
+    dataloader_num_workers=20,
     dataloader_persistent_workers=True,
-    dataloader_prefetch_factor=4,
+    dataloader_prefetch_factor=6,
     dataloader_pin_memory=True,
     save_total_limit=7,
     num_train_epochs=5,

@@ -67,10 +67,12 @@ ds_ten = ds_ten.remove_columns(["original_text"])
 ds_eleven = ds_eleven.remove_columns(["original_text"])
 
 ds_ten = ds_ten.filter(
-    lambda example: example["text"] is not None and example["text"].strip() != ""
+    lambda example: example["text"] is not None and example["text"].strip() != "",
+    num_proc=20
 )
 ds_eleven = ds_eleven.filter(
-    lambda example: example["text"] is not None and example["text"].strip() != ""
+    lambda example: example["text"] is not None and example["text"].strip() != "",
+    num_proc=20
 )
 
 ds_one["train"] = ds_one["train"].cast_column(

@@ -2,10 +2,7 @@ import os
 
 os.environ["UNSLOTH_DISABLE_FAST_GENERATION"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
 
 from unsloth import FastModel
 from datasets import load_dataset, Audio, concatenate_datasets
@@ -211,7 +208,6 @@ language_model, tokenizer = FastModel.from_pretrained(
     dtype=None,
     auto_model=Qwen2ForCausalLM,
     full_finetuning=True,
-    device_map="balanced",
 )
 
 start_audio_token = "<|start_of_audio|>"
@@ -392,10 +388,7 @@ training_args = TrainingArguments(
     output_dir="./asr_qwen_ckpts",
     per_device_train_batch_size=64,
     per_device_eval_batch_size=64,
-    dataloader_num_workers=20,
-    dataloader_persistent_workers=True,
-    dataloader_prefetch_factor=6,
-    dataloader_pin_memory=True,
+    dataloader_num_workers=14,
     save_total_limit=7,
     num_train_epochs=5,
     warmup_ratio=0.05,

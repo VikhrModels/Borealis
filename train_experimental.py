@@ -3,7 +3,6 @@ import os
 os.environ["UNSLOTH_DISABLE_FAST_GENERATION"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-
 from unsloth import FastModel
 from datasets import load_dataset, Audio, concatenate_datasets
 from transformers import (
@@ -36,8 +35,6 @@ from audiomentations import (
     HighPassFilter,
     LowPassFilter,
 )
-
-# ---------------- data ----------------
 
 ds_one = load_dataset("Vikhrmodels/ToneBooksPlus", num_proc=8)
 ds_two = load_dataset("Vikhrmodels/ToneSpeak", num_proc=8)
@@ -199,8 +196,6 @@ combined_val = combined_val.cast_column(
 combined_train = _filter_and_report(combined_train, "train")
 combined_val = _filter_and_report(combined_val, "validation")
 
-# ---------------- models ----------------
-
 whisper_encoder = WhisperFeatureExtractor.from_pretrained("openai/whisper-large-v3")
 
 language_model, tokenizer = FastModel.from_pretrained(
@@ -216,8 +211,6 @@ end_audio_token = "<|end_of_audio|>"
 tokenizer.add_special_tokens(
     {"additional_special_tokens": [start_audio_token, end_audio_token]}
 )
-
-# ---------------- augmentations ----------------
 
 NOISE_PATH = "/workspace/Borealis/data_for_augs/musan/flattened_16khz/"
 IR_PATH = (
@@ -284,7 +277,11 @@ def build_augment(
             Compose(
                 [
                     Mp3Compression(
-                        min_bitrate=mp3_min_bitrate, max_bitrate=mp3_max_bitrate, p=1.0
+                        min_bitrate=mp3_min_bitrate,
+                        max_bitrate=mp3_max_bitrate,
+                        backend="fast-mp3-augment",
+                        preserve_delay=False,
+                        p=1.0,
                     ),
                     HighPassFilter(
                         min_cutoff_freq=250.0, max_cutoff_freq=450.0, p=heavy_hp_prob
@@ -305,6 +302,7 @@ def build_augment(
                         sounds_path=noise_path,
                         min_snr_db=snr_min,
                         max_snr_db=snr_max,
+                        lru_cache_size=2,
                         p=1.0,
                     ),
                     AddGaussianNoise(min_amplitude=0.002, max_amplitude=0.01, p=1.0),
@@ -313,7 +311,12 @@ def build_augment(
             ),
             OneOf(
                 [
-                    ApplyImpulseResponse(ir_path=ir_path, p=1.0),
+                    ApplyImpulseResponse(
+                        ir_path=ir_path,
+                        leave_length_unchanged=True,
+                        lru_cache_size=12,
+                        p=1.0,
+                    ),
                     Gain(min_gain_db=-6, max_gain_db=6, p=1.0),
                 ],
                 p=p_ir,
@@ -334,11 +337,11 @@ def build_augment(
 augment = build_augment(
     NOISE_PATH,
     IR_PATH,
-    snr_min=15.0,
-    snr_max=25.0,
-    p_noise=0.45,
+    snr_min=18.0,
+    snr_max=28.0,
+    p_noise=0.40,
     p_ir=0.0,
-    p_eq=0.30,
+    p_eq=0.25,
     eq_min_gain_db=-6.0,
     eq_max_gain_db=6.0,
     p_heavy=0.0,
@@ -353,8 +356,6 @@ augment = build_augment(
     mp3_max_bitrate=192,
     overall_p=0.45,
 )
-
-# ---------------- datasets ----------------
 
 train_dataset = BorealisBaseDataset(
     audio_processor=whisper_encoder,
@@ -372,23 +373,17 @@ eval_dataset = BorealisBaseDataset(
     augmentations=None,
 )
 
-# ---------------- collator ----------------
-
 collator = AudioCollator()
-
-# ---------------- model wrapper ----------------
 
 model = BorealisForConditionalGeneration(
     language_model=language_model, tokenizer=tokenizer
 )
 
-# ---------------- training ----------------
-
 training_args = TrainingArguments(
     output_dir="./asr_qwen_ckpts",
-    per_device_train_batch_size=64,
-    per_device_eval_batch_size=64,
-    dataloader_num_workers=14,
+    per_device_train_batch_size=32,
+    per_device_eval_batch_size=32,
+    dataloader_num_workers=16,
     save_total_limit=7,
     num_train_epochs=5,
     warmup_ratio=0.05,
@@ -484,9 +479,6 @@ def compute_metrics(eval_pred):
     return {"wer": wer_score, "cer": cer_score}
 
 
-# -------- расписание аугментаций (curriculum) --------
-
-
 class AugSchedule(TrainerCallback):
     def __init__(self, dataset, noise_path, ir_path):
         self.dataset = dataset
@@ -495,19 +487,18 @@ class AugSchedule(TrainerCallback):
 
     def on_epoch_begin(self, args, state, control, **kwargs):
         ep = int(state.epoch or 0)
-
-        if ep < 2:
+        if ep < 1:
             cfg = dict(
-                snr_min=15.0,
-                snr_max=25.0,
-                p_noise=0.45,
+                snr_min=18.0,
+                snr_max=28.0,
+                p_noise=0.40,
                 p_ir=0.0,
-                p_eq=0.30,
+                p_eq=0.25,
                 eq_min_gain_db=-6.0,
                 eq_max_gain_db=6.0,
-                p_heavy=0.05,
-                heavy_hp_prob=0.50,
-                heavy_lp_prob=0.50,
+                p_heavy=0.0,
+                heavy_hp_prob=0.0,
+                heavy_lp_prob=0.0,
                 resample_min_sr=9000,
                 resample_max_sr=12000,
                 alias_min_sr=7000,
@@ -517,16 +508,58 @@ class AugSchedule(TrainerCallback):
                 mp3_max_bitrate=192,
                 overall_p=0.45,
             )
-        elif ep < 5:
+        elif ep < 3:
             cfg = dict(
                 snr_min=12.0,
                 snr_max=22.0,
                 p_noise=0.50,
-                p_ir=0.18,
+                p_ir=0.12,
                 p_eq=0.38,
                 eq_min_gain_db=-9.0,
                 eq_max_gain_db=9.0,
-                p_heavy=0.14,
+                p_heavy=0.12,
+                heavy_hp_prob=0.55,
+                heavy_lp_prob=0.55,
+                resample_min_sr=7000,
+                resample_max_sr=11000,
+                alias_min_sr=5000,
+                alias_max_sr=10000,
+                enable_mp3=False,
+                mp3_min_bitrate=96,
+                mp3_max_bitrate=160,
+                overall_p=0.50,
+            )
+        elif ep < 4:
+            cfg = dict(
+                snr_min=10.0,
+                snr_max=20.0,
+                p_noise=0.55,
+                p_ir=0.18,
+                p_eq=0.42,
+                eq_min_gain_db=-12.0,
+                eq_max_gain_db=12.0,
+                p_heavy=0.18,
+                heavy_hp_prob=0.65,
+                heavy_lp_prob=0.65,
+                resample_min_sr=6000,
+                resample_max_sr=10000,
+                alias_min_sr=4000,
+                alias_max_sr=9000,
+                enable_mp3=True,
+                mp3_min_bitrate=96,
+                mp3_max_bitrate=160,
+                overall_p=0.50,
+            )
+        else:
+            cfg = dict(
+                snr_min=12.0,
+                snr_max=22.0,
+                p_noise=0.50,
+                p_ir=0.12,
+                p_eq=0.35,
+                eq_min_gain_db=-9.0,
+                eq_max_gain_db=9.0,
+                p_heavy=0.10,
                 heavy_hp_prob=0.60,
                 heavy_lp_prob=0.60,
                 resample_min_sr=7000,
@@ -536,30 +569,8 @@ class AugSchedule(TrainerCallback):
                 enable_mp3=True,
                 mp3_min_bitrate=96,
                 mp3_max_bitrate=160,
-                overall_p=0.50,
+                overall_p=0.48,
             )
-        else:
-            cfg = dict(
-                snr_min=10.0,
-                snr_max=20.0,
-                p_noise=0.58,
-                p_ir=0.28,
-                p_eq=0.48,
-                eq_min_gain_db=-12.0,
-                eq_max_gain_db=12.0,
-                p_heavy=0.22,
-                heavy_hp_prob=0.75,
-                heavy_lp_prob=0.75,
-                resample_min_sr=6000,
-                resample_max_sr=10000,
-                alias_min_sr=4000,
-                alias_max_sr=9000,
-                enable_mp3=True,
-                mp3_min_bitrate=80,
-                mp3_max_bitrate=128,
-                overall_p=0.50,
-            )
-
         self.dataset.augmentations = build_augment(self.noise_path, self.ir_path, **cfg)
 
 

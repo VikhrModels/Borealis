@@ -302,7 +302,6 @@ def build_augment(
                         sounds_path=noise_path,
                         min_snr_db=snr_min,
                         max_snr_db=snr_max,
-                        lru_cache_size=2,
                         p=1.0,
                     ),
                     AddGaussianNoise(min_amplitude=0.002, max_amplitude=0.01, p=1.0),
@@ -314,7 +313,6 @@ def build_augment(
                     ApplyImpulseResponse(
                         ir_path=ir_path,
                         leave_length_unchanged=True,
-                        lru_cache_size=12,
                         p=1.0,
                     ),
                     Gain(min_gain_db=-6, max_gain_db=6, p=1.0),

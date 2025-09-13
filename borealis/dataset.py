@@ -1,5 +1,6 @@
 from torch.utils.data import Dataset
 from transformers import WhisperFeatureExtractor, PreTrainedTokenizer
+import numpy as np
 
 
 class BorealisBaseDataset(Dataset):
@@ -11,6 +12,7 @@ class BorealisBaseDataset(Dataset):
         max_seconds_len: float = 30.0,
         sampling_rate: int = 16_000,
         max_text_len: int = 512,
+        augmentations=None,
     ):
         super().__init__()
         self.real_max_len = int(max_seconds_len * sampling_rate)
@@ -21,6 +23,7 @@ class BorealisBaseDataset(Dataset):
         self.tokenizer = text_tokenizer
 
         self.hf_ds = hf_ds
+        self.augmentations = augmentations
 
     def __len__(self) -> int:
         return len(self.hf_ds)
@@ -29,6 +32,12 @@ class BorealisBaseDataset(Dataset):
         example = self.hf_ds[index]
         audio_sample = example["audio"]["array"]
         text_sample = example["text"]
+
+        if audio_sample.dtype != np.float32:
+            audio_sample = audio_sample.astype(np.float32, copy=False)
+
+        if self.augmentations:
+            audio_sample = self.augmentations(samples=audio_sample, sample_rate=self.sr)
 
         proc = self.audio_processor(
             audio_sample,

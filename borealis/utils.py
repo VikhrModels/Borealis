@@ -1,47 +1,41 @@
 from typing import List, Dict
+from torch import default_collate
 import torch
-import numpy as np
+from datasets import Dataset
 
 
 class AudioCollator:
     def __call__(
         self, features: List[Dict[str, torch.Tensor]]
     ) -> Dict[str, torch.Tensor]:
-        return {
-            "mel": torch.stack([f["mel"] for f in features]),  # [B, 128, T]
-            "audio_att_mask": torch.stack(
-                [f["audio_att_mask"] for f in features]
-            ),  # [B, T]
-            "labels": torch.stack([f["labels"] for f in features]),  # [B, L]
-            "text_att_mask": torch.stack(
-                [f["text_att_mask"] for f in features]
-            ),  # [B, L]
-        }
+        return default_collate(features)
 
 
-MIN_SEC = 0.10
-SR = 16_000
+def clean_dataset(
+    ds: Dataset,
+    audio_column: str = "audio",
+    text_column: str = "text",
+    num_proc: int = 20,
+    min_sec: float = 0.079,
+    sr: int = 16_000,
+) -> Dataset:
+    MIN_SAMPLES = int(min_sec * sr)
 
+    len_before = len(ds)
 
-def _has_valid_audio(example):
-    a = example.get("audio", None)
-    if a is None:
-        return False
-    arr = a.get("array", None)
-    if arr is None:
-        return False
-    if not isinstance(arr, np.ndarray):
-        return False
-    if arr.size == 0:
-        return False
-    if np.isnan(arr).any() or np.isinf(arr).any():
-        return False
-    return arr.shape[0] >= int(MIN_SEC * SR)
+    ds = ds.filter(
+        lambda example: (
+            (a := example.get(audio_column, None)) is not None
+            and (arr := a.get("array", None)) is not None
+            and arr.size != 0
+            and arr.shape[0] >= MIN_SAMPLES
+            and (text := example.get(text_column, None)) is not None
+            and len(text.strip()) != 0
+        ),
+        num_proc=num_proc,
+    )
 
+    len_after = len(ds)
+    print(f"Filtered {len_before - len_after} / {len_before} examples")
 
-def _filter_and_report(ds, name: str, num_proc: int = 20):
-    before = len(ds)
-    ds = ds.filter(_has_valid_audio, num_proc=num_proc)
-    after = len(ds)
-    print(f"[filter] {name}: {before} -> {after} (removed {before - after})")
     return ds

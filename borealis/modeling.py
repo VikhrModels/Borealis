@@ -2,7 +2,6 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import WhisperModel
 
 
 class AudioLanguageAdapter(nn.Module):
@@ -19,19 +18,14 @@ class AudioLanguageAdapter(nn.Module):
 class BorealisForConditionalGeneration(nn.Module):
     def __init__(
         self,
-        whisper_encoder_name: str = "openai/whisper-large-v3",
-        llm_name: str = "Qwen/Qwen2.5-0.5B",
-        language_model=None,
+        audio_encoder=None,
         tokenizer=None,
+        language_model=None,
         downsample_factor: int = 4,
     ):
         super().__init__()
-        assert tokenizer is not None, "Tokenizer надо передать в модельку"
 
-        self.encoder: WhisperModel = WhisperModel.from_pretrained(
-            whisper_encoder_name
-        ).encoder
-        self.encoder.to(torch.bfloat16)
+        self.encoder = audio_encoder
         self.encoder.eval()
         for p in self.encoder.parameters():
             p.requires_grad = False
@@ -50,13 +44,13 @@ class BorealisForConditionalGeneration(nn.Module):
         self.adapter = AudioLanguageAdapter(
             hidden_size=self.encoder.config.d_model * downsample_factor,
             dim=self.llm.config.hidden_size,
-        )
-
-        self.adapter.to(torch.bfloat16)
+        ).to(self.llm.dtype)
 
         self.bos_id = tokenizer.convert_tokens_to_ids("<|im_start|>")
         self.audio_start_id = tokenizer.convert_tokens_to_ids("<|start_of_audio|>")
         self.audio_end_id = tokenizer.convert_tokens_to_ids("<|end_of_audio|>")
+
+        self.chunk_mel_frames = 3000
 
     def _downsample(self, seq: torch.Tensor) -> torch.Tensor:
         k, (T, d) = self.downsample_factor, seq.shape
@@ -69,44 +63,54 @@ class BorealisForConditionalGeneration(nn.Module):
         idx = torch.full((batch, 1), tok_id, dtype=torch.long, device=device)
         return self.llm.get_input_embeddings()(idx)
 
+    def _process_audio(self, mel) -> tuple[torch.Tensor, torch.Tensor, list[int]]:
+        B, device = len(mel), mel[0][0].device
+        audio_embs = []
+        audio_mask = []
+        per_sample_T = []
+        max_T = 0
+        for b in range(B):
+            chunk_stack = torch.stack(mel[b])
+            enc_chunks = self.encoder(
+                input_features=chunk_stack, return_dict=True
+            ).last_hidden_state
+            enc_long = torch.cat(enc_chunks, dim=0)
+            ds_long = self._downsample(enc_long)
+            audio_embs.append(ds_long)
+            per_sample_T.append(ds_long.size(0))
+            max_T = max(max_T, ds_long.size(0))
+
+        for i in range(B):
+            pad = max_T - per_sample_T[i]
+            if pad > 0:
+                audio_embs[i] = F.pad(audio_embs[i], (0, 0, 0, pad))
+                audio_mask.append(
+                    torch.ones(per_sample_T[i], dtype=torch.long, device=device)
+                )
+                audio_mask[i] = F.pad(audio_mask[i], (0, pad), value=0)
+            else:
+                audio_mask.append(
+                    torch.ones(per_sample_T[i], dtype=torch.long, device=device)
+                )
+
+        audio_embeddings = torch.stack(audio_embs)
+        audio_mask = torch.stack(audio_mask)
+        audio_embeddings = self.adapter(audio_embeddings)
+
+        return audio_embeddings, audio_mask, per_sample_T
+
     def forward(
         self,
-        mel: torch.Tensor,
-        audio_att_mask: torch.Tensor,
+        mel,
         labels: torch.Tensor,
         text_att_mask: torch.Tensor,
     ):
-        B, device = mel.size(0), mel.device
+        B, device = labels.size(0), labels.device
 
-        enc_out = self.encoder(
-            input_features=mel, attention_mask=None, return_dict=True
-        ).last_hidden_state
-
-        audio_embs, audio_mask, max_T = [], [], 0
-        for seq in enc_out:
-            ds = self._downsample(seq)
-            audio_embs.append(ds)
-            max_T = max(max_T, ds.size(0))
-
-        for ds in audio_embs:
-            pad = max_T - ds.size(0)
-            audio_mask.append(
-                torch.cat(
-                    [
-                        torch.ones(ds.size(0), dtype=torch.long, device=device),
-                        torch.zeros(pad, dtype=torch.long, device=device),
-                    ]
-                )
-            )
-            if pad:
-                ds = F.pad(ds, (0, 0, 0, pad))
-        audio_embeddings = torch.stack(audio_embs, 0)
-        audio_mask = torch.stack(audio_mask, 0)
-        audio_embeddings = self.adapter(audio_embeddings)
+        audio_embeddings, audio_mask, per_sample_T = self._process_audio(mel)
 
         text_embeddings = self.llm.get_input_embeddings()(labels)
 
-        # [Изменено: поиск позиций для вставки аудио в chat]
         sa_positions = (labels == self.audio_start_id).nonzero(as_tuple=True)
         ea_positions = (labels == self.audio_end_id).nonzero(as_tuple=True)
 
@@ -135,7 +139,6 @@ class BorealisForConditionalGeneration(nn.Module):
             att_mask, batch_first=True, padding_value=0
         )
 
-        # [Изменено: расчет assistant_start для loss_labels]
         assistant_prompt = self.tokenizer(
             "<|im_start|>assistant\n", add_special_tokens=False
         ).input_ids
@@ -152,13 +155,15 @@ class BorealisForConditionalGeneration(nn.Module):
             else:
                 raise ValueError("Assistant prompt not found")
             assistant_starts.append(
-                assistant_start + (ea_idx - sa_idx - 1) + max_T
-            )  # Корректировка на вставку audio
+                assistant_start + (ea_idx - sa_idx - 1) + per_sample_T[b]
+            )
 
         max_len = inputs_embeds.size(1)
         loss_labels = labels.new_full((B, max_len), -100)
         for b in range(B):
-            orig_assist_start = assistant_starts[b] - max_T - (ea_idx - sa_idx - 1)
+            orig_assist_start = (
+                assistant_starts[b] - per_sample_T[b] - (ea_idx - sa_idx - 1)
+            )
             content_len = len(labels[b]) - orig_assist_start
             loss_labels[b, assistant_starts[b] : assistant_starts[b] + content_len] = (
                 labels[b, orig_assist_start:]
@@ -175,51 +180,24 @@ class BorealisForConditionalGeneration(nn.Module):
         )
         return out.loss, out.logits
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def generate(
         self,
-        mel: torch.Tensor,
+        mel,
         att_mask: torch.Tensor,
         max_new_tokens: int = 512,
         **kwargs,
     ):
-        return_tokens = kwargs.pop("return_tokens", False)
-
-        single = mel.dim() == 2
+        single = not isinstance(mel[0], list)
         if single:
-            mel, att_mask = mel.unsqueeze(0), att_mask.unsqueeze(0)
+            mel = [mel]
 
-        mel = mel.to(torch.bfloat16)
+        mel = [[c.to(torch.bfloat16) for c in m] for m in mel]
 
-        B, device = mel.size(0), mel.device
+        B, device = len(mel), mel[0][0].device
 
-        enc_out = self.encoder(
-            input_features=mel, attention_mask=None, return_dict=True
-        ).last_hidden_state
+        audio_embeddings, audio_mask, per_sample_T = self._process_audio(mel)
 
-        audio_embs, audio_mask, max_T = [], [], 0
-        for seq in enc_out:
-            ds = self._downsample(seq)
-            audio_embs.append(ds)
-            max_T = max(max_T, ds.size(0))
-
-        for i, ds in enumerate(audio_embs):
-            pad = max_T - ds.size(0)
-            audio_mask.append(
-                torch.cat(
-                    [
-                        torch.ones(ds.size(0), dtype=torch.long, device=device),
-                        torch.zeros(pad, dtype=torch.long, device=device),
-                    ]
-                )
-            )
-            if pad:
-                audio_embs[i] = F.pad(ds, (0, 0, 0, pad))
-        audio_embeddings = torch.stack(audio_embs, 0)
-        audio_mask = torch.stack(audio_mask, 0)
-        audio_embeddings = self.adapter(audio_embeddings)
-
-        # [Изменено: построение chat для generate]
         messages = [
             {
                 "role": "system",
@@ -232,7 +210,7 @@ class BorealisForConditionalGeneration(nn.Module):
         ]
 
         chat_text = self.tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
+            messages, tokenize=False, add_generation_prompt=True, reasoning=False
         )
 
         model_inputs = self.tokenizer(chat_text, return_tensors="pt").to(device)
@@ -274,8 +252,5 @@ class BorealisForConditionalGeneration(nn.Module):
             **kwargs,
         )
 
-        if return_tokens:
-            return gen_ids[0] if single else gen_ids
-        else:
-            txt = self.tokenizer.batch_decode(gen_ids, skip_special_tokens=True)
-            return txt[0] if single else txt
+        txt = self.tokenizer.batch_decode(gen_ids, skip_special_tokens=True)
+        return txt[0] if single else txt

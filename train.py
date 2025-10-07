@@ -2,14 +2,13 @@ import os
 
 os.environ["UNSLOTH_DISABLE_FAST_GENERATION"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["WANDB_ENTITY"] = "vikhr-audio"
+os.environ["WANDB_PROJECT"] = "Borealis"
 
 from unsloth import FastModel
 from datasets import load_dataset, Audio, concatenate_datasets
-from transformers import (
-    WhisperFeatureExtractor,
-    Qwen2ForCausalLM,
-)
-from borealis.dataset import BorealisBaseDataset
+from transformers import WhisperFeatureExtractor, Qwen3ForCausalLM, WhisperModel
+from borealis.dataset import BorealisPretrainDataset
 from borealis.utils import AudioCollator, _filter_and_report
 from borealis.modeling import BorealisForConditionalGeneration
 from transformers import TrainingArguments, Trainer, TrainerCallback
@@ -17,28 +16,18 @@ import jiwer
 import numpy as np
 import torch
 import random
+import torchaudio.functional as F
+import torchaudio.transforms as T
+import torchaudio
+
+from io import BytesIO
+from pathlib import Path
 
 torch.backends.cudnn.benchmark = True
 
-from audiomentations import (
-    Compose,
-    AddBackgroundNoise,
-    AddGaussianNoise,
-    ApplyImpulseResponse,
-    Gain,
-    Mp3Compression,
-    OneOf,
-    Normalize,
-    Aliasing,
-    SevenBandParametricEQ,
-    Resample,
-    HighPassFilter,
-    LowPassFilter,
-)
-
 ds_one = load_dataset("Vikhrmodels/ToneBooksPlus", num_proc=8)
 ds_two = load_dataset("Vikhrmodels/ToneSpeak", num_proc=8)
-ds_three = load_dataset("Vikhrmodels/ToneWebinars", num_proc=8)
+ds_three = load_dataset("Vikhrmodels/ReadyFormatDF2", num_proc=8)
 ds_four = load_dataset("Vikhrmodels/ToneRuLS", num_proc=8)
 ds_five = load_dataset("Vikhrmodels/ToneSlavic", num_proc=8)
 ds_six = load_dataset("Vikhrmodels/ToneRuDevices", num_proc=8)
@@ -199,9 +188,9 @@ combined_val = _filter_and_report(combined_val, "validation")
 whisper_encoder = WhisperFeatureExtractor.from_pretrained("openai/whisper-large-v3")
 
 language_model, tokenizer = FastModel.from_pretrained(
-    model_name="Qwen/Qwen2.5-0.5B-Instruct",
+    model_name="Vikhrmodels/ReadyFormatDF2",
     dtype=None,
-    auto_model=Qwen2ForCausalLM,
+    auto_model=Qwen3ForCausalLM,
     full_finetuning=True,
 )
 
@@ -216,6 +205,162 @@ NOISE_PATH = "/workspace/Borealis/data_for_augs/musan/flattened_16khz/"
 IR_PATH = (
     "/workspace/Borealis/data_for_augs/EchoThiefImpulseResponseLibrary/flattened_16khz/"
 )
+
+
+class AugmentCompose:
+    def __init__(
+        self,
+        noise_path: str,
+        ir_path: str,
+        snr_min: float,
+        snr_max: float,
+        p_noise: float,
+        p_ir: float,
+        p_eq: float,
+        eq_min_gain_db: float,
+        eq_max_gain_db: float,
+        p_heavy: float,
+        heavy_hp_prob: float,
+        heavy_lp_prob: float,
+        resample_min_sr: int,
+        resample_max_sr: int,
+        alias_min_sr: int,
+        alias_max_sr: int,
+        enable_mp3: bool,
+        mp3_min_bitrate: int,
+        mp3_max_bitrate: int,
+        overall_p: float = 0.5,
+        sample_rate: int = 16000,
+    ):
+        self.noise_path = Path(noise_path)
+        self.ir_path = Path(ir_path)
+        self.snr_min = snr_min
+        self.snr_max = snr_max
+        self.p_noise = p_noise
+        self.p_ir = p_ir
+        self.p_eq = p_eq
+        self.eq_min_gain_db = eq_min_gain_db
+        self.eq_max_gain_db = eq_max_gain_db
+        self.p_heavy = p_heavy
+        self.heavy_hp_prob = heavy_hp_prob
+        self.heavy_lp_prob = heavy_lp_prob
+        self.resample_min_sr = resample_min_sr
+        self.resample_max_sr = resample_max_sr
+        self.alias_min_sr = alias_min_sr
+        self.alias_max_sr = alias_max_sr
+        self.enable_mp3 = enable_mp3
+        self.mp3_min_bitrate = mp3_min_bitrate
+        self.mp3_max_bitrate = mp3_max_bitrate
+        self.overall_p = overall_p
+        self.sample_rate = sample_rate
+
+        # Предзагрузка шумов и IR как tensors
+        self.noises = [
+            torchaudio.load(str(p))[0] for p in self.noise_path.glob("*") if p.is_file()
+        ]
+        self.irs = [
+            torchaudio.load(str(p))[0] for p in self.ir_path.glob("*") if p.is_file()
+        ]
+
+        # Фиксированные частоты для 7-band EQ (примерные октавы)
+        self.eq_freqs = [60, 150, 400, 1000, 2400, 6000, 15000]
+
+    def __call__(self, waveform: torch.Tensor, sample_rate: int) -> torch.Tensor:
+        if sample_rate != self.sample_rate:
+            waveform = T.Resample(sample_rate, self.sample_rate)(waveform)
+            sample_rate = self.sample_rate
+
+        if torch.rand(1).item() >= self.overall_p:
+            return waveform  # Нет аугментаций
+
+        original_length = waveform.shape[-1]
+
+        # OneOf для шума (только один тип, без дублирования)
+        if torch.rand(1).item() < self.p_noise:
+            if torch.rand(1).item() < 0.5:  # AddBackgroundNoise
+                if self.noises:
+                    noise = random.choice(self.noises)
+                    noise = (
+                        noise[:, :original_length]
+                        if noise.shape[1] > original_length
+                        else F.pad(noise, (0, original_length - noise.shape[1]))
+                    )
+                    snr_db = torch.tensor([torch.uniform(self.snr_min, self.snr_max)])
+                    waveform = F.add_noise(waveform, noise, snr_db)
+            else:  # AddGaussianNoise
+                amplitude = torch.uniform(0.002, 0.01)
+                noise = torch.randn_like(waveform) * amplitude
+                waveform += noise  # Прямое добавление, как гауссов шум
+
+        # OneOf для IR/Gain (только один, без дублирования)
+        if torch.rand(1).item() < self.p_ir:
+            if torch.rand(1).item() < 0.5:  # ApplyImpulseResponse
+                if self.irs:
+                    ir = random.choice(self.irs)
+                    ir = ir / torch.linalg.vector_norm(ir, ord=2)  # Нормализация
+                    waveform = F.fftconvolve(waveform, ir)[
+                        :, :original_length
+                    ]  # Обрезать до оригинала
+            else:  # Gain
+                gain_db = torch.uniform(-6.0, 6.0)  # Общий диапазон
+                waveform = F.gain(waveform, gain_db)
+
+        # SevenBandParametricEQ (независимый блок, без дублирования с фильтрами)
+        if torch.rand(1).item() < self.p_eq:
+            for freq in self.eq_freqs:
+                gain_db = torch.uniform(self.eq_min_gain_db, self.eq_max_gain_db)
+                waveform = F.peaking_eq(waveform, sample_rate, freq, gain_db, q=1.0)
+
+        # OneOf для heavy (только один вариант, с опциональными HP/LP, без дублирования)
+        if torch.rand(1).item() < self.p_heavy:
+            heavy_choice = random.randint(0, 2 if self.enable_mp3 else 1)
+            if heavy_choice == 0:  # Resample heavy
+                temp_sr = int(
+                    torch.uniform(self.resample_min_sr, self.resample_max_sr).item()
+                )
+                resampler_down = T.Resample(sample_rate, temp_sr)
+                resampler_up = T.Resample(temp_sr, sample_rate)
+                waveform = resampler_up(resampler_down(waveform))
+            elif heavy_choice == 1:  # Aliasing heavy (приближение через decimation)
+                temp_sr = int(
+                    torch.uniform(self.alias_min_sr, self.alias_max_sr).item()
+                )
+                factor = sample_rate // temp_sr
+                waveform_down = waveform[:, ::factor][
+                    :, : temp_sr * (original_length // sample_rate)
+                ]
+                waveform = F.interpolate(
+                    waveform_down.unsqueeze(0), size=original_length, mode="linear"
+                ).squeeze(0)
+            else:  # MP3 heavy
+                bitrate = int(
+                    torch.uniform(self.mp3_min_bitrate, self.mp3_max_bitrate).item()
+                )
+                with BytesIO() as buf:
+                    torchaudio.save(
+                        buf,
+                        waveform,
+                        sample_rate,
+                        format="mp3",
+                        bits_per_sample=bitrate,
+                    )
+                    buf.seek(0)
+                    waveform, _ = torchaudio.load(buf)
+
+            # Опциональные HP/LP для heavy (независимо от выбора)
+            if torch.rand(1).item() < self.heavy_hp_prob:
+                cutoff = torch.uniform(250.0, 450.0).item()
+                waveform = F.highpass_biquad(waveform, sample_rate, cutoff)
+            if torch.rand(1).item() < self.heavy_lp_prob:
+                cutoff = torch.uniform(3000.0, 3800.0).item()
+                waveform = F.lowpass_biquad(waveform, sample_rate, cutoff)
+
+        # Normalize всегда в конце цепочки
+        waveform = waveform / waveform.abs().max(dim=-1, keepdim=True)[0].clamp(
+            min=1e-8
+        )
+
+        return waveform
 
 
 def build_augment(
@@ -239,96 +384,28 @@ def build_augment(
     mp3_min_bitrate: int,
     mp3_max_bitrate: int,
     overall_p: float = 0.5,
-) -> Compose:
-    heavy_transforms = [
-        Compose(
-            [
-                Resample(
-                    min_sample_rate=resample_min_sr,
-                    max_sample_rate=resample_max_sr,
-                    p=1.0,
-                ),
-                HighPassFilter(
-                    min_cutoff_freq=250.0, max_cutoff_freq=450.0, p=heavy_hp_prob
-                ),
-                LowPassFilter(
-                    min_cutoff_freq=3000.0, max_cutoff_freq=3800.0, p=heavy_lp_prob
-                ),
-            ],
-            p=1.0,
-        ),
-        Compose(
-            [
-                Aliasing(
-                    min_sample_rate=alias_min_sr, max_sample_rate=alias_max_sr, p=1.0
-                ),
-                HighPassFilter(
-                    min_cutoff_freq=250.0, max_cutoff_freq=450.0, p=heavy_hp_prob
-                ),
-                LowPassFilter(
-                    min_cutoff_freq=3000.0, max_cutoff_freq=3800.0, p=heavy_lp_prob
-                ),
-            ],
-            p=1.0,
-        ),
-    ]
-    if enable_mp3:
-        heavy_transforms.append(
-            Compose(
-                [
-                    Mp3Compression(
-                        min_bitrate=mp3_min_bitrate,
-                        max_bitrate=mp3_max_bitrate,
-                        backend="fast-mp3-augment",
-                        preserve_delay=False,
-                        p=1.0,
-                    ),
-                    HighPassFilter(
-                        min_cutoff_freq=250.0, max_cutoff_freq=450.0, p=heavy_hp_prob
-                    ),
-                    LowPassFilter(
-                        min_cutoff_freq=3000.0, max_cutoff_freq=3800.0, p=heavy_lp_prob
-                    ),
-                ],
-                p=1.0,
-            )
-        )
-
-    return Compose(
-        [
-            OneOf(
-                [
-                    AddBackgroundNoise(
-                        sounds_path=noise_path,
-                        min_snr_db=snr_min,
-                        max_snr_db=snr_max,
-                        p=1.0,
-                    ),
-                    AddGaussianNoise(min_amplitude=0.002, max_amplitude=0.01, p=1.0),
-                ],
-                p=p_noise,
-            ),
-            OneOf(
-                [
-                    ApplyImpulseResponse(
-                        ir_path=ir_path,
-                        leave_length_unchanged=True,
-                        p=1.0,
-                    ),
-                    Gain(min_gain_db=-6, max_gain_db=6, p=1.0),
-                ],
-                p=p_ir,
-            ),
-            SevenBandParametricEQ(
-                min_gain_db=eq_min_gain_db,
-                max_gain_db=eq_max_gain_db,
-                p=p_eq,
-            ),
-            OneOf(heavy_transforms, p=p_heavy),
-            Normalize(p=1.0, apply_to="all"),
-        ],
-        shuffle=False,
-        p=overall_p,
+) -> AugmentCompose:
+    return AugmentCompose(
+        noise_path=noise_path,
+        ir_path=ir_path,
+        snr_min=snr_min,
+        snr_max=snr_max,
+        p_noise=p_noise,
+        p_ir=p_ir,
+        p_eq=p_eq,
+        eq_min_gain_db=eq_min_gain_db,
+        eq_max_gain_db=eq_max_gain_db,
+        p_heavy=p_heavy,
+        heavy_hp_prob=heavy_hp_prob,
+        heavy_lp_prob=heavy_lp_prob,
+        resample_min_sr=resample_min_sr,
+        resample_max_sr=resample_max_sr,
+        alias_min_sr=alias_min_sr,
+        alias_max_sr=alias_max_sr,
+        enable_mp3=enable_mp3,
+        mp3_min_bitrate=mp3_min_bitrate,
+        mp3_max_bitrate=mp3_max_bitrate,
+        overall_p=overall_p,
     )
 
 
@@ -355,7 +432,7 @@ augment = build_augment(
     overall_p=0.45,
 )
 
-train_dataset = BorealisBaseDataset(
+train_dataset = BorealisPretrainDataset(
     audio_processor=whisper_encoder,
     text_tokenizer=tokenizer,
     hf_ds=combined_train,
@@ -363,7 +440,7 @@ train_dataset = BorealisBaseDataset(
     augmentations=augment,
 )
 
-eval_dataset = BorealisBaseDataset(
+eval_dataset = BorealisPretrainDataset(
     audio_processor=whisper_encoder,
     text_tokenizer=tokenizer,
     hf_ds=combined_val,
@@ -373,8 +450,12 @@ eval_dataset = BorealisBaseDataset(
 
 collator = AudioCollator()
 
+audio_encoder = WhisperModel.from_pretrained(
+    "openai/whisper-large-v3", dtype=torch.bfloat16
+).encoder
+
 model = BorealisForConditionalGeneration(
-    language_model=language_model, tokenizer=tokenizer
+    audio_encoder=whisper_encoder, language_model=language_model, tokenizer=tokenizer
 )
 
 training_args = TrainingArguments(
@@ -433,7 +514,6 @@ class CustomTrainer(Trainer):
                 for k, v in inputs.items()
                 if k != "labels" and k != "text_att_mask"
             }
-            gen_inputs["att_mask"] = gen_inputs.pop("audio_att_mask")
 
             generated_ids = model.generate(
                 **gen_inputs, return_tokens=True, **self.gen_kwargs

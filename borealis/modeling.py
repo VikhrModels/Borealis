@@ -74,7 +74,8 @@ class BorealisForConditionalGeneration(nn.Module):
             enc_chunks = self.encoder(
                 input_features=chunk_stack, return_dict=True
             ).last_hidden_state
-            enc_long = torch.cat(enc_chunks, dim=0)
+            # enc_long = torch.cat(enc_chunks, dim=0)
+            enc_long = enc_chunks.view(-1, enc_chunks.size(-1))
             ds_long = self._downsample(enc_long)
             audio_embs.append(ds_long)
             per_sample_T.append(ds_long.size(0))
@@ -184,7 +185,6 @@ class BorealisForConditionalGeneration(nn.Module):
     def generate(
         self,
         mel,
-        att_mask: torch.Tensor,
         max_new_tokens: int = 512,
         **kwargs,
     ):
@@ -210,7 +210,7 @@ class BorealisForConditionalGeneration(nn.Module):
         ]
 
         chat_text = self.tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True, reasoning=False
+            messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
         )
 
         model_inputs = self.tokenizer(chat_text, return_tensors="pt").to(device)
@@ -240,13 +240,9 @@ class BorealisForConditionalGeneration(nn.Module):
         inputs_embeds = torch.nn.utils.rnn.pad_sequence(
             inputs_embeds, batch_first=True, padding_value=0.0
         )
-        att_mask = torch.nn.utils.rnn.pad_sequence(
-            full_att_mask, batch_first=True, padding_value=0
-        )
 
         gen_ids = self.llm.generate(
             inputs_embeds=inputs_embeds,
-            attention_mask=att_mask,
             max_new_tokens=max_new_tokens,
             eos_token_id=self.tokenizer.eos_token_id,
             **kwargs,

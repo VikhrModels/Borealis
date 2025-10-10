@@ -1,5 +1,4 @@
 from typing import List, Dict
-from torch.utils.data.dataloader import default_collate
 import torch
 from datasets import Dataset
 
@@ -8,7 +7,16 @@ class AudioCollator:
     def __call__(
         self, features: List[Dict[str, torch.Tensor]]
     ) -> Dict[str, torch.Tensor]:
-        return default_collate(features)
+        mels = [item["mel"] for item in features]
+
+        labels = torch.stack([item["labels"] for item in features])
+        text_att_masks = torch.stack([item["text_att_mask"] for item in features])
+
+        return {
+            "mel": mels,
+            "labels": labels,
+            "text_att_mask": text_att_masks,
+        }
 
 
 def is_valid_audio(a):

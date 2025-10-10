@@ -1,6 +1,5 @@
 from torch.utils.data import Dataset
 from transformers import WhisperFeatureExtractor, PreTrainedTokenizer
-import numpy as np
 import datasets
 
 
@@ -16,13 +15,10 @@ class BorealisPretrainDataset(Dataset):
         augmentations=None,
     ):
         self.dataset = hf_dataset
-
         self.tokenizer = tokenizer
         self.feature_extractor = feature_extractor
-
         self.sr = sampling_rate
         self.real_max_len = int(max_audio_len * sampling_rate)
-
         self.text_max_len = max_text_len
         self.augmentations = augmentations
 
@@ -50,14 +46,12 @@ class BorealisPretrainDataset(Dataset):
             },
             {"role": "assistant", "content": text_sample},
         ]
-
         chat_text = self.tokenizer.apply_chat_template(
             conversation,
             tokenize=False,
             add_generation_prompt=False,
             enable_thinking=False,
         )
-
         tokenized = self.tokenizer(
             chat_text,
             padding="max_length",
@@ -68,7 +62,6 @@ class BorealisPretrainDataset(Dataset):
         )
 
         chunks = []
-
         for i in range(0, len(audio_sample), self.real_max_len):
             chunk = audio_sample[i : i + self.real_max_len]
             proc = self.feature_extractor(
@@ -80,11 +73,13 @@ class BorealisPretrainDataset(Dataset):
                 return_attention_mask=False,
                 return_tensors="pt",
             )
-
-            chunks.append(proc)
+            mel = proc.input_features.squeeze(0)
+            if self.augmentations:
+                mel = self.augmentations.apply_spec(mel)
+            chunks.append(mel)
 
         return {
-            "mel": [chunk.input_features.squeeze(0) for chunk in chunks],
+            "mel": chunks,
             "labels": tokenized.input_ids.squeeze(0),
             "text_att_mask": tokenized.attention_mask.squeeze(0),
         }

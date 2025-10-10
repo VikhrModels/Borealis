@@ -188,9 +188,10 @@ class BorealisForConditionalGeneration(nn.Module):
         max_new_tokens: int = 512,
         **kwargs,
     ):
-        single = not isinstance(mel[0], list)
-        if single:
+        if not isinstance(mel, list) or len(mel) == 0 or not isinstance(mel[0], list):
             mel = [mel]
+
+        single = len(mel) == 1
 
         mel = [[c.to(torch.bfloat16) for c in m] for m in mel]
 
@@ -241,8 +242,13 @@ class BorealisForConditionalGeneration(nn.Module):
             inputs_embeds, batch_first=True, padding_value=0.0
         )
 
+        att_mask = torch.nn.utils.rnn.pad_sequence(
+            full_att_mask, batch_first=True, padding_value=0
+        )
+
         gen_ids = self.llm.generate(
             inputs_embeds=inputs_embeds,
+            attention_mask=att_mask,
             max_new_tokens=max_new_tokens,
             eos_token_id=self.tokenizer.eos_token_id,
             **kwargs,

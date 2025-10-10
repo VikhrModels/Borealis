@@ -1,5 +1,5 @@
 from typing import List, Dict
-from torch import default_collate
+from torch.utils.data.dataloader import default_collate
 import torch
 from datasets import Dataset
 
@@ -11,31 +11,34 @@ class AudioCollator:
         return default_collate(features)
 
 
+def is_valid_audio(a):
+    if a is None:
+        return False
+    try:
+        return a.get_all_samples().data.shape[0] > 0
+    except Exception:
+        return False
+
+
 def clean_dataset(
     ds: Dataset,
     audio_column: str = "audio",
     text_column: str = "text",
-    num_proc: int = 20,
-    min_sec: float = 0.079,
-    sr: int = 16_000,
+    num_proc: int = 42,
 ) -> Dataset:
-    MIN_SAMPLES = int(min_sec * sr)
-
     len_before = len(ds)
 
     ds = ds.filter(
-        lambda example: (
-            (a := example.get(audio_column, None)) is not None
-            and (arr := a.get("array", None)) is not None
-            and arr.size != 0
-            and arr.shape[0] >= MIN_SAMPLES
-            and (text := example.get(text_column, None)) is not None
-            and len(text.strip()) != 0
-        ),
+        lambda batch: [
+            (t is not None and len(t.strip()) > 0) and is_valid_audio(a)
+            for t, a in zip(batch[text_column], batch[audio_column])
+        ],
+        batched=True,
+        batch_size=7000,
         num_proc=num_proc,
     )
 
     len_after = len(ds)
-    print(f"Filtered {len_before - len_after} / {len_before} examples")
+    print(f"Удалено {len_before - len_after} примеров из {len_before}")
 
     return ds

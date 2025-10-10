@@ -30,12 +30,14 @@ class BorealisPretrainDataset(Dataset):
         return len(self.dataset)
 
     def __getitem__(self, index):
-        example = self.hf_ds[index]
-        audio_sample = example["audio"]["array"].type(np.float32)
+        example = self.dataset[index]
+        audio_sample = example["audio"].get_all_samples().data.squeeze()
         text_sample = example["text"]
 
         if self.augmentations:
-            audio_sample = self.augmentations(samples=audio_sample, sample_rate=self.sr)
+            audio_sample = self.augmentations(
+                waveform=audio_sample, sample_rate=self.sr
+            )
 
         conversation = [
             {
@@ -50,7 +52,10 @@ class BorealisPretrainDataset(Dataset):
         ]
 
         chat_text = self.tokenizer.apply_chat_template(
-            conversation, tokenize=False, add_generation_prompt=False, reasoning=False
+            conversation,
+            tokenize=False,
+            add_generation_prompt=False,
+            enable_thinking=False,
         )
 
         tokenized = self.tokenizer(
@@ -59,6 +64,7 @@ class BorealisPretrainDataset(Dataset):
             truncation=True,
             max_length=self.text_max_len,
             return_tensors="pt",
+            padding_side="right",
         )
 
         chunks = []

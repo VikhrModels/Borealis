@@ -28,6 +28,10 @@ class BorealisPretrainDataset(Dataset):
     def __getitem__(self, index):
         example = self.dataset[index]
         audio_sample = example["audio"].get_all_samples().data.squeeze()
+
+        while audio_sample.dim() > 1:
+            audio_sample = audio_sample.mean(dim=0)
+
         text_sample = example["text"]
 
         if self.augmentations:

@@ -254,4 +254,6 @@ class BorealisForConditionalGeneration(nn.Module):
             **kwargs,
         )
 
-        return gen_ids[0] if single else gen_ids
+        if single:
+            gen_ids = gen_ids.unsqueeze(0)
+        return gen_ids

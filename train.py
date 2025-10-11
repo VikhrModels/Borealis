@@ -279,32 +279,6 @@ def compute_metrics(eval_pred):
     return {"wer": wer_score, "cer": cer_score}
 
 
-class LoggingCallback(TrainerCallback):
-    def on_evaluate(self, args, state, control, **kwargs):
-        num_samples = 5
-        indices = random.sample(range(len(eval_dataset)), num_samples)
-
-        table = wandb.Table(columns=["audio", "reference", "generated"])
-
-        for idx in indices:
-            example = combined_val[idx]
-            audio = example["audio"].get_all_samples().data.squeeze()
-            reference = example["text"].lower()
-
-            item = eval_dataset[idx]
-            inputs = collator([item])
-            inputs = {k: v.to(model.device) for k, v in inputs.items()}
-
-            with torch.inference_mode():
-                generated_ids = model.generate(mel=inputs["mel"], **trainer.gen_kwargs)
-                generated = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
-                generated = extract_assistant_content(generated).lower()
-
-            table.add_data(wandb.Audio(audio, sample_rate=16000), reference, generated)
-
-        wandb.log({"eval_samples": table}, step=state.global_step)
-
-
 trainer = CustomTrainer(
     model=model,
     args=training_args,
@@ -324,6 +298,5 @@ trainer.add_callback(
     )
 )
 
-trainer.add_callback(LoggingCallback())
 
 trainer.train()

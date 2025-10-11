@@ -228,9 +228,9 @@ class CustomTrainer(Trainer):
                 if k != "labels" and k != "text_att_mask"
             }
 
-            generated_texts = model.generate(mel=gen_inputs["mel"], **self.gen_kwargs)
+            generated_ids = model.generate(mel=gen_inputs["mel"], **self.gen_kwargs)
 
-        return (loss, generated_texts, labels)
+        return (loss, generated_ids, labels)
 
 
 def extract_assistant_content(text: str) -> str:
@@ -254,7 +254,13 @@ def extract_assistant_content(text: str) -> str:
 def compute_metrics(eval_pred):
     predictions, labels = eval_pred.predictions, eval_pred.label_ids
 
-    decoded_preds = [extract_assistant_content(pred).lower() for pred in predictions]
+    print(f"Min/Max predictions: {predictions.min()}, {predictions.max()}")
+
+    predictions = np.where(predictions == -100, tokenizer.pad_token_id, predictions)
+    predictions = np.clip(predictions, 0, len(tokenizer) - 1)
+
+    decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
+    decoded_preds = [extract_assistant_content(pred).lower() for pred in decoded_preds]
 
     labels = np.where(labels == -100, tokenizer.pad_token_id, labels)
     decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
@@ -290,9 +296,9 @@ class LoggingCallback(TrainerCallback):
             inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
             with torch.inference_mode():
-                generated = model.generate(mel=inputs["mel"], **trainer.gen_kwargs)[0]
-
-            generated = extract_assistant_content(generated).lower()
+                generated_ids = model.generate(mel=inputs["mel"], **trainer.gen_kwargs)
+                generated = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
+                generated = extract_assistant_content(generated).lower()
 
             table.add_data(wandb.Audio(audio, sample_rate=16000), reference, generated)
 

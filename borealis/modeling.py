@@ -254,5 +254,4 @@ class BorealisForConditionalGeneration(nn.Module):
             **kwargs,
         )
 
-        txt = self.tokenizer.batch_decode(gen_ids, skip_special_tokens=True)
-        return txt[0] if single else txt
+        return gen_ids[0] if single else gen_ids

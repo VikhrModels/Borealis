@@ -1,47 +1,52 @@
 from typing import List, Dict
 import torch
-import numpy as np
+from datasets import Dataset
 
 
 class AudioCollator:
     def __call__(
         self, features: List[Dict[str, torch.Tensor]]
     ) -> Dict[str, torch.Tensor]:
+        mels = [item["mel"] for item in features]
+
+        labels = torch.stack([item["labels"] for item in features])
+        text_att_masks = torch.stack([item["text_att_mask"] for item in features])
+
         return {
-            "mel": torch.stack([f["mel"] for f in features]),  # [B, 128, T]
-            "audio_att_mask": torch.stack(
-                [f["audio_att_mask"] for f in features]
-            ),  # [B, T]
-            "labels": torch.stack([f["labels"] for f in features]),  # [B, L]
-            "text_att_mask": torch.stack(
-                [f["text_att_mask"] for f in features]
-            ),  # [B, L]
+            "mel": mels,
+            "labels": labels,
+            "text_att_mask": text_att_masks,
         }
 
 
-MIN_SEC = 0.10
-SR = 16_000
-
-
-def _has_valid_audio(example):
-    a = example.get("audio", None)
+def is_valid_audio(a):
     if a is None:
         return False
-    arr = a.get("array", None)
-    if arr is None:
+    try:
+        return a.get_all_samples().data.shape[0] > 0
+    except Exception:
         return False
-    if not isinstance(arr, np.ndarray):
-        return False
-    if arr.size == 0:
-        return False
-    if np.isnan(arr).any() or np.isinf(arr).any():
-        return False
-    return arr.shape[0] >= int(MIN_SEC * SR)
 
 
-def _filter_and_report(ds, name: str, num_proc: int = 20):
-    before = len(ds)
-    ds = ds.filter(_has_valid_audio, num_proc=num_proc)
-    after = len(ds)
-    print(f"[filter] {name}: {before} -> {after} (removed {before - after})")
+def clean_dataset(
+    ds: Dataset,
+    audio_column: str = "audio",
+    text_column: str = "text",
+    num_proc: int = 42,
+) -> Dataset:
+    len_before = len(ds)
+
+    ds = ds.filter(
+        lambda batch: [
+            (t is not None and len(t.strip()) > 0) and is_valid_audio(a)
+            for t, a in zip(batch[text_column], batch[audio_column])
+        ],
+        batched=True,
+        batch_size=7000,
+        num_proc=num_proc,
+    )
+
+    len_after = len(ds)
+    print(f"Удалено {len_before - len_after} примеров из {len_before}")
+
     return ds

@@ -140,21 +140,25 @@ class BorealisForConditionalGeneration(nn.Module):
             att_mask, batch_first=True, padding_value=0
         )
 
-        assistant_prompt = self.tokenizer(
-            "<|im_start|>assistant\n", add_special_tokens=False
+        think_end_prompt = self.tokenizer(
+            "</think>\n\n", add_special_tokens=False
         ).input_ids
+        prompt_len = len(think_end_prompt)
         assistant_starts = []
         for b in range(B):
             seq = labels[b]
-            for i in range(len(seq) - len(assistant_prompt)):
-                if torch.equal(
-                    seq[i : i + len(assistant_prompt)],
-                    torch.tensor(assistant_prompt, device=device),
-                ):
-                    assistant_start = i + len(assistant_prompt)
-                    break
-            else:
-                raise ValueError("Assistant prompt not found")
+            seq_after_ea = seq[ea_idx + 1 :]
+            matches = (
+                seq_after_ea.unfold(0, prompt_len, 1)
+                == torch.tensor(think_end_prompt, device=device)
+            ).all(dim=1)
+            match_indices = matches.nonzero(as_tuple=True)[0]
+            if len(match_indices) != 1:
+                raise ValueError(
+                    f"Expected exactly one '</think>\\n\\n' in sample {b}, found {len(match_indices)}"
+                )
+            assistant_start = ea_idx + 1 + match_indices.item() + prompt_len
+
             assistant_starts.append(
                 assistant_start + (ea_idx - sa_idx - 1) + per_sample_T[b]
             )

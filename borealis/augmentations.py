@@ -6,10 +6,10 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import torch
 import torch.nn.functional as Fnn
-import torchaudio
 from torchaudio import functional as AF
 from torchaudio.transforms import Resample, FrequencyMasking, TimeMasking
 from transformers import TrainerCallback
+from datasets import Dataset
 
 __all__ = [
     "AugmentConfig",
@@ -68,19 +68,22 @@ class AugmentationStage:
     description: str = ""
 
 
-def _load_audio_bank(path: Path) -> List[Tuple[torch.Tensor, int]]:
-    if not path.exists():
-        warnings.warn(f"[Augmentations] Audio folder '{path}' not found.")
+def _load_audio_bank(hf_dataset: Dataset) -> List[Tuple[torch.Tensor, int]]:
+    if len(hf_dataset) == 0:
+        warnings.warn("[Augmentations] Audio dataset is empty.")
         return []
     bank: List[Tuple[torch.Tensor, int]] = []
-    for file_path in sorted(path.rglob("*")):
-        if not file_path.is_file():
-            continue
+    for item in hf_dataset:
         try:
-            waveform, sr = torchaudio.load(file_path)
+            waveform, sr = (
+                item["audio"].get_all_samples().data.squeeze(),
+                item["audio"].get_all_samples().sample_rate,
+            )
             bank.append((waveform.to(torch.float32), sr))
-        except (RuntimeError, OSError):
-            warnings.warn(f"[Augmentations] Failed to load '{file_path}'. Skipping.")
+        except (RuntimeError, OSError, KeyError):
+            warnings.warn(
+                "[Augmentations] Failed to load audio from dataset item. Skipping."
+            )
     return bank
 
 
@@ -497,21 +500,19 @@ class AugmentationScheduler(TrainerCallback):
     def __init__(
         self,
         dataset,
-        noise_path: str,
-        ir_path: str,
+        noise_hf_set: Dataset,
+        ir_hf_set: Dataset,
         stages: Optional[List[AugmentationStage]] = None,
         sample_rate: int = 16_000,
     ) -> None:
         self.dataset = dataset
-        self.noise_path = Path(noise_path)
-        self.ir_path = Path(ir_path)
         self.sample_rate = sample_rate
         self.stages = sorted(
             stages or default_augmentation_stages(sample_rate),
             key=lambda s: s.start_epoch,
         )
-        self.noise_bank = _load_audio_bank(self.noise_path)
-        self.ir_bank = _load_audio_bank(self.ir_path)
+        self.noise_bank = _load_audio_bank(noise_hf_set)
+        self.ir_bank = _load_audio_bank(ir_hf_set)
         self._pipelines_cache: Dict[int, Optional[AugmentationPipeline]] = {}
         self._current_stage_idx: Optional[int] = None
 

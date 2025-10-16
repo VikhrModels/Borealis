@@ -15,7 +15,6 @@ from datasets import Audio, concatenate_datasets, load_dataset
 from transformers import (
     Qwen3ForCausalLM,
     Trainer,
-    TrainerCallback,
     TrainingArguments,
     WhisperFeatureExtractor,
     WhisperModel,
@@ -30,13 +29,15 @@ from borealis.modeling import BorealisForConditionalGeneration
 from borealis.utils import AudioCollator, clean_dataset
 
 import re
-import wandb
 
 
 torch.backends.cudnn.benchmark = True
 
-NOISE_PATH = "/home/alexw/Project_Audio/Borealis/data_for_augs/musan/flattened_16khz/"
-IR_PATH = "/home/alexw/Project_Audio/Borealis/data_for_augs/EchoThiefImpulseResponseLibrary/flattened_16khz/"
+
+noise_dataset = load_dataset(
+    "Vikhrmodels/Audio_Noise_Dataset", split="Musan", num_proc=8
+)
+ir_dataset = load_dataset("Vikhrmodels/Audio_Noise_Dataset", split="Echo", num_proc=8)
 
 ds_one = load_dataset(
     "Vikhrmodels/ToneBooksPlus", columns=["audio", "text"], num_proc=8
@@ -291,8 +292,8 @@ trainer = CustomTrainer(
 trainer.add_callback(
     AugmentationScheduler(
         dataset=train_dataset,
-        noise_path=NOISE_PATH,
-        ir_path=IR_PATH,
+        noise_hf_set=noise_dataset,
+        ir_hf_set=ir_dataset,
         stages=AUGMENTATION_STAGES,
         sample_rate=16_000,
     )

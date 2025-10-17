@@ -1,17 +1,13 @@
-import os
-
-os.environ["UNSLOTH_DISABLE_FAST_GENERATION"] = "1"
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-os.environ["WANDB_ENTITY"] = "vikhr-audio"
-os.environ["WANDB_PROJECT"] = "Borealis"
-
 from unsloth import FastModel
+import os
+import yaml
+import argparse
 import random
-
+import re
 import jiwer
 import numpy as np
 import torch
-from datasets import Audio, concatenate_datasets, load_dataset
+from datasets import concatenate_datasets, load_dataset
 from transformers import (
     Qwen3ForCausalLM,
     Trainer,
@@ -26,130 +22,120 @@ from borealis.augmentations import (
 )
 from borealis.dataset import BorealisPretrainDataset
 from borealis.modeling import BorealisForConditionalGeneration
-from borealis.utils import AudioCollator, clean_dataset
+from borealis.utils import (
+    AudioCollator,
+    clean_dataset,
+    load_and_process_dataset,
+    convert_numeric_strings,
+)
 
-import re
 
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--config",
+    type=str,
+    default="configs/Borealis_1.5B.yaml",
+    help="Path to the config file.",
+)
+args = parser.parse_args()
+
+with open(args.config, "r") as f:
+    config = yaml.safe_load(f)
+
+config = convert_numeric_strings(config)
+
+os.environ["UNSLOTH_DISABLE_FAST_GENERATION"] = "1"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["WANDB_ENTITY"] = config["wandb"]["entity"]
+os.environ["WANDB_PROJECT"] = config["wandb"]["project"]
 
 torch.backends.cudnn.benchmark = True
 
 
 noise_dataset = load_dataset(
-    "Vikhrmodels/Audio_Noise_Dataset", split="Musan", num_proc=8
+    config["datasets"]["noise"]["name"],
+    split=config["datasets"]["noise"]["split"],
+    num_proc=config["datasets"]["num_proc"],
 )
-ir_dataset = load_dataset("Vikhrmodels/Audio_Noise_Dataset", split="Echo", num_proc=8)
-
-ds_one = load_dataset(
-    "Vikhrmodels/ToneBooksPlus", columns=["audio", "text"], num_proc=8
-)
-ds_two = load_dataset("Vikhrmodels/ToneSpeak", columns=["audio", "text"], num_proc=8)
-ds_three = load_dataset(
-    "Vikhrmodels/ReadyFormatDF2", columns=["audio", "text"], num_proc=8
-)
-ds_four = load_dataset("Vikhrmodels/ToneRuLS", columns=["audio", "text"], num_proc=8)
-ds_five = load_dataset(
-    "Vikhrmodels/ToneSlavic", columns=["audio", "sentence"], num_proc=8
-)
-ds_six = load_dataset(
-    "Vikhrmodels/ToneRuDevices", columns=["audio", "text"], num_proc=8
-)
-ds_seven = load_dataset(
-    "Vikhrmodels/ReadyFormatDF", columns=["audio", "text"], num_proc=8
-)
-ds_eight = load_dataset(
-    "Vikhrmodels/ToneRuDevicesAudiobooks", columns=["audio", "text"], num_proc=8
-)
-ds_nine = load_dataset(
-    "bond005/podlodka_speech", columns=["audio", "transcription"], num_proc=8
-)
-ds_ten = load_dataset(
-    "Vikhrmodels/ToneGolosOpus",
-    "Crowd",
-    columns=["audio", "text"],
-    num_proc=8,
-)
-ds_eleven = load_dataset(
-    "Vikhrmodels/ToneGolosOpus",
-    "Farfield",
-    columns=["audio", "text"],
-    num_proc=8,
+ir_dataset = load_dataset(
+    config["datasets"]["ir"]["name"],
+    split=config["datasets"]["ir"]["split"],
+    num_proc=config["datasets"]["num_proc"],
 )
 
-ds_five = ds_five.filter(
-    lambda ex: ex.get("locale") is not None and "ru" in str(ex["locale"]).lower(),
-    num_proc=20,
-)
-ds_five = ds_five.rename_column("sentence", "text")
-
-ds_nine = ds_nine.rename_column("transcription", "text")
-
-train_ds_list = [
-    ds_one["train"],
-    ds_two["train"],
-    ds_three["train"],
-    ds_four["train"],
-    ds_five["train"],
-    ds_six["train"],
-    ds_seven["train"],
-    ds_eight["train"],
-    ds_nine["train"],
-    ds_ten["train"],
-    ds_eleven["train"],
-]
-
-for i in range(len(train_ds_list)):
-    train_ds_list[i] = train_ds_list[i].cast_column(
-        "audio", Audio(sampling_rate=16_000)
+train_ds_list = []
+for ds_config in config["datasets"]["train"]:
+    split_key = ds_config["split"]
+    config_name = ds_config.get("config", None)
+    ds = load_and_process_dataset(
+        name=ds_config["name"],
+        config_name=config_name,
+        target_split="train",
+        columns=ds_config["columns"],
+        num_proc=config["datasets"]["num_proc"],
+        sampling_rate=config["datasets"]["sampling_rate"],
+        rename_text=ds_config.get("rename_text"),
+        rename_audio=ds_config.get("rename_audio"),
+        filter_locale_ru=ds_config.get("filter", {}).get("locale_ru", False),
     )
+    train_ds_list.append(ds)
 
 combined_train = concatenate_datasets(train_ds_list)
 
-
-val_ds_list = [
-    ds_one["validation"].select(range(279)),
-    ds_two["validation"].select(range(279)),
-    ds_three["validation"].select(range(279)),
-    ds_four["validation"].select(range(279)),
-    ds_five["validation"].select(range(279)),
-    ds_six["validation"].select(range(279)),
-    ds_seven["validation"].select(range(279)),
-    ds_eight["validation"].select(range(279)),
-    ds_nine["validation"].select(range(20)),
-    ds_ten["validation"].select(range(279)),
-    ds_eleven["validation"].select(range(279)),
-]
-
-for i in range(len(val_ds_list)):
-    val_ds_list[i] = val_ds_list[i].cast_column("audio", Audio(sampling_rate=16_000))
+val_ds_list = []
+for ds_config in config["datasets"]["val"]:
+    split_key = ds_config["split"]
+    config_name = ds_config.get("config", None)
+    ds = load_and_process_dataset(
+        name=ds_config["name"],
+        config_name=config_name,
+        target_split="validation",
+        columns=ds_config["columns"],
+        num_proc=config["datasets"]["num_proc"],
+        sampling_rate=config["datasets"]["sampling_rate"],
+        select_range=ds_config.get("select_range"),
+        rename_text=ds_config.get("rename_text"),
+        rename_audio=ds_config.get("rename_audio"),
+        filter_locale_ru=ds_config.get("filter", {}).get("locale_ru", False),
+    )
+    val_ds_list.append(ds)
 
 combined_val = concatenate_datasets(val_ds_list)
 
-combined_train = clean_dataset(combined_train)
-combined_val = clean_dataset(combined_val)
+if config["datasets"]["clean_dataset"]:
+    combined_train = clean_dataset(combined_train)
+    combined_val = clean_dataset(combined_val)
 
-whisper_encoder = WhisperFeatureExtractor.from_pretrained("openai/whisper-large-v3")
-
-language_model, tokenizer = FastModel.from_pretrained(
-    model_name="Unsloth/Qwen3-1.7B",
-    dtype=None,
-    auto_model=Qwen3ForCausalLM,
-    full_finetuning=True,
+whisper_encoder = WhisperFeatureExtractor.from_pretrained(
+    config["model"]["whisper"]["pretrained"]
 )
 
-start_audio_token = "<|start_of_audio|>"
-end_audio_token = "<|end_of_audio|>"
+language_model, tokenizer = FastModel.from_pretrained(
+    model_name=config["model"]["language_model"]["pretrained"],
+    dtype=None,
+    auto_model=Qwen3ForCausalLM,
+    full_finetuning=config["model"]["language_model"]["full_finetuning"],
+)
+
+start_audio_token = config["model"]["special_tokens"]["start_audio"]
+end_audio_token = config["model"]["special_tokens"]["end_audio"]
 
 tokenizer.add_special_tokens(
     {"additional_special_tokens": [start_audio_token, end_audio_token]}
 )
 
-AUGMENTATION_STAGES = default_augmentation_stages(sample_rate=16_000)
+if config["augmentation"]["stages"] == "default":
+    AUGMENTATION_STAGES = default_augmentation_stages(
+        sample_rate=config["augmentation"]["sample_rate"]
+    )
+else:
+    AUGMENTATION_STAGES = config["augmentation"]["stages"]
 
 train_dataset = BorealisPretrainDataset(
     hf_dataset=combined_train,
     tokenizer=tokenizer,
     feature_extractor=whisper_encoder,
-    max_text_len=512,
+    max_text_len=config["model"]["max_text_len"],
     augmentations=None,
 )
 
@@ -157,53 +143,28 @@ eval_dataset = BorealisPretrainDataset(
     hf_dataset=combined_val,
     tokenizer=tokenizer,
     feature_extractor=whisper_encoder,
-    max_text_len=512,
+    max_text_len=config["model"]["max_text_len"],
     augmentations=None,
 )
 
 collator = AudioCollator()
 
 audio_encoder = WhisperModel.from_pretrained(
-    "openai/whisper-large-v3", dtype=torch.bfloat16
+    config["model"]["whisper"]["pretrained"],
+    dtype=getattr(torch, config["model"]["whisper"]["dtype"]),
 ).encoder
 
 model = BorealisForConditionalGeneration(
     audio_encoder=audio_encoder, language_model=language_model, tokenizer=tokenizer
 )
 
-training_args = TrainingArguments(
-    output_dir="./asr_qwen_ckpts",
-    per_device_train_batch_size=16,
-    per_device_eval_batch_size=16,
-    dataloader_num_workers=16,
-    save_total_limit=7,
-    num_train_epochs=5,
-    warmup_ratio=0.05,
-    learning_rate=3e-4,
-    bf16=True,
-    eval_strategy="steps",
-    save_strategy="steps",
-    eval_steps=1500,
-    save_steps=10000,
-    logging_steps=50,
-    report_to="wandb",
-    save_safetensors=False,
-    optim="adamw_torch",
-    lr_scheduler_type="cosine",
-)
+training_args = TrainingArguments(**config["training"])
 
 
 class CustomTrainer(Trainer):
     def __init__(self, *args, gen_kwargs=None, **kwargs):
         super().__init__(*args, **kwargs)
-        self.gen_kwargs = gen_kwargs or {
-            "max_new_tokens": 512,
-            "do_sample": False,
-            "num_beams": 5,
-            "early_stopping": True,
-            "repetition_penalty": 1.2,
-            "temperature": 0.79,
-        }
+        self.gen_kwargs = gen_kwargs or config["generation"]
 
     def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
         if prediction_loss_only:
@@ -270,7 +231,9 @@ def compute_metrics(eval_pred):
     ]
 
     if len(decoded_preds) > 1:
-        indices = random.sample(range(len(decoded_preds)), 5)
+        indices = random.sample(
+            range(len(decoded_preds)), config["metrics"]["random_samples"]
+        )
         for i in indices:
             print(f"Reference: {decoded_labels[i]}\nGenerated: {decoded_preds[i]}\n")
 
@@ -295,7 +258,7 @@ trainer.add_callback(
         noise_hf_set=noise_dataset,
         ir_hf_set=ir_dataset,
         stages=AUGMENTATION_STAGES,
-        sample_rate=16_000,
+        sample_rate=config["augmentation"]["sample_rate"],
     )
 )
 

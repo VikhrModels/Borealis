@@ -50,6 +50,10 @@ class BorealisForConditionalGeneration(nn.Module):
         self.audio_start_id = tokenizer.convert_tokens_to_ids("<|start_of_audio|>")
         self.audio_end_id = tokenizer.convert_tokens_to_ids("<|end_of_audio|>")
 
+        self.assistant_start_token = tokenizer.convert_tokens_to_ids("<|im_start|>")
+        self.assistant_role_token = tokenizer.convert_tokens_to_ids("assistant")
+        self.im_end_token = tokenizer.convert_tokens_to_ids("<|im_end|>")
+
         self.chunk_mel_frames = 3000
 
     def _downsample(self, seq: torch.Tensor) -> torch.Tensor:
@@ -117,6 +121,8 @@ class BorealisForConditionalGeneration(nn.Module):
 
         inputs_embeds = []
         att_mask = []
+        assistant_starts = []
+
         for b in range(B):
             sa_idx = sa_positions[1][sa_positions[0] == b].item()
             ea_idx = ea_positions[1][ea_positions[0] == b].item()
@@ -133,6 +139,32 @@ class BorealisForConditionalGeneration(nn.Module):
             inputs_embeds.append(emb)
             att_mask.append(full_mask)
 
+            seq_after_ea = labels[b, ea_idx + 1 :]
+
+            im_end_positions = (seq_after_ea == self.im_end_token).nonzero(
+                as_tuple=True
+            )[0]
+            if len(im_end_positions) > 0:
+                im_end_pos = im_end_positions[0].item()
+                seq_after_im_end = seq_after_ea[im_end_pos + 1 :]
+                im_start_positions = (
+                    seq_after_im_end == self.assistant_start_token
+                ).nonzero(as_tuple=True)[0]
+
+                if len(im_start_positions) > 0:
+                    assistant_start_in_orig = (
+                        ea_idx + 1 + im_end_pos + 1 + im_start_positions[0].item() + 2
+                    )
+                else:
+                    assistant_start_in_orig = ea_idx + 1 + im_end_pos + 1
+            else:
+                assistant_start_in_orig = ea_idx + 1
+
+            assistant_start_adjusted = (
+                assistant_start_in_orig + per_sample_T[b] - (ea_idx - sa_idx - 1)
+            )
+            assistant_starts.append(assistant_start_adjusted)
+
         inputs_embeds = torch.nn.utils.rnn.pad_sequence(
             inputs_embeds, batch_first=True, padding_value=0.0
         )
@@ -140,39 +172,24 @@ class BorealisForConditionalGeneration(nn.Module):
             att_mask, batch_first=True, padding_value=0
         )
 
-        think_end_prompt = self.tokenizer(
-            "</think>\n\n", add_special_tokens=False
-        ).input_ids
-        prompt_len = len(think_end_prompt)
-        assistant_starts = []
-        for b in range(B):
-            seq = labels[b]
-            seq_after_ea = seq[ea_idx + 1 :]
-            matches = (
-                seq_after_ea.unfold(0, prompt_len, 1)
-                == torch.tensor(think_end_prompt, device=device)
-            ).all(dim=1)
-            match_indices = matches.nonzero(as_tuple=True)[0]
-            if len(match_indices) != 1:
-                raise ValueError(
-                    f"Expected exactly one '</think>\\n\\n' in sample {b}, found {len(match_indices)}"
-                )
-            assistant_start = ea_idx + 1 + match_indices.item() + prompt_len
-
-            assistant_starts.append(
-                assistant_start + (ea_idx - sa_idx - 1) + per_sample_T[b]
-            )
-
         max_len = inputs_embeds.size(1)
         loss_labels = labels.new_full((B, max_len), -100)
+
         for b in range(B):
+            sa_idx = sa_positions[1][sa_positions[0] == b].item()
+            ea_idx = ea_positions[1][ea_positions[0] == b].item()
+
             orig_assist_start = (
-                assistant_starts[b] - per_sample_T[b] - (ea_idx - sa_idx - 1)
+                assistant_starts[b] - per_sample_T[b] + (ea_idx - sa_idx - 1)
             )
             content_len = len(labels[b]) - orig_assist_start
-            loss_labels[b, assistant_starts[b] : assistant_starts[b] + content_len] = (
-                labels[b, orig_assist_start:]
-            )
+
+            if assistant_starts[b] < max_len and content_len > 0:
+                end_pos = min(assistant_starts[b] + content_len, max_len)
+                actual_content_len = end_pos - assistant_starts[b]
+                loss_labels[b, assistant_starts[b] : end_pos] = labels[
+                    b, orig_assist_start : orig_assist_start + actual_content_len
+                ]
 
         if self.tokenizer.pad_token_id is not None:
             loss_labels[loss_labels == self.tokenizer.pad_token_id] = -100
@@ -195,8 +212,6 @@ class BorealisForConditionalGeneration(nn.Module):
         if not isinstance(mel, list) or len(mel) == 0 or not isinstance(mel[0], list):
             mel = [mel]
 
-        single = len(mel) == 1
-
         mel = [[c.to(torch.bfloat16) for c in m] for m in mel]
 
         B, device = len(mel), mel[0][0].device
@@ -215,7 +230,9 @@ class BorealisForConditionalGeneration(nn.Module):
         ]
 
         chat_text = self.tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
         )
 
         model_inputs = self.tokenizer(chat_text, return_tensors="pt").to(device)
@@ -230,6 +247,7 @@ class BorealisForConditionalGeneration(nn.Module):
 
         inputs_embeds = []
         full_att_mask = []
+
         for b in range(B):
             prefix_emb = text_embeddings[b, : sa_idx + 1]
             postfix_emb = text_embeddings[b, ea_idx:]
@@ -258,6 +276,4 @@ class BorealisForConditionalGeneration(nn.Module):
             **kwargs,
         )
 
-        if single:
-            gen_ids = gen_ids.unsqueeze(0)
         return gen_ids

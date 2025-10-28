@@ -203,13 +203,6 @@ def extract_assistant_content(text: str) -> str:
         return text.strip()
 
     assistant_block = assistant_match.group(1).strip()
-
-    think_match = re.search(r"<think>\n\n</think>\n\n", assistant_block, re.DOTALL)
-    if think_match:
-        assistant_block = re.sub(
-            r"<think>.*?</think>", "", assistant_block, flags=re.DOTALL
-        ).strip()
-
     return assistant_block
 
 

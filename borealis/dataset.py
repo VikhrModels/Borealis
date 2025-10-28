@@ -54,7 +54,6 @@ class BorealisPretrainDataset(Dataset):
             conversation,
             tokenize=False,
             add_generation_prompt=False,
-            enable_thinking=False,
         )
         tokenized = self.tokenizer(
             chat_text,

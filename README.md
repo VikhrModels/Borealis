@@ -20,14 +20,7 @@ Borealis — аудио LLM для русского языка. Есть в дв
    hf auth login
    ```
 
-3. **Скачивание шумов** 
-   ```bash
-   chmod +x download_noises.sh
-
-   ./download_noises.sh
-   ```
-
-4. **Запуск обучения**  
+3. **Запуск обучения**  
    ```bash
    accelerate config
 
@@ -38,7 +31,7 @@ Borealis — аудио LLM для русского языка. Есть в дв
    python train.py
    ```
 
-5. **Инференс**  
+4. **Инференс**  
    Для быстрой проверки используйте ноутбук [test_model.ipynb](test_model.ipynb). Он загружает сохранённую модель и вычисляет метрики $WER$ и $CER$
 
 ## Структура проекта

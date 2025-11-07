@@ -28,7 +28,7 @@ from borealis.utils import (
     load_and_process_dataset,
     convert_numeric_strings,
 )
-
+from unsloth.chat_templates import get_chat_template
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -115,6 +115,11 @@ language_model, tokenizer = FastModel.from_pretrained(
     dtype=None,
     auto_model=Qwen3ForCausalLM,
     full_finetuning=config["model"]["language_model"]["full_finetuning"],
+)
+
+tokenizer = get_chat_template(
+    tokenizer,
+    chat_template="qwen3-instruct",
 )
 
 start_audio_token = config["model"]["special_tokens"]["start_audio"]

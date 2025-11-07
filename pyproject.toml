@@ -3,15 +3,13 @@ name = "borealis"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.13.8"
 dependencies = [
-    "datasets>=4.3.0",
+    "datasets>=4.2.0",
     "jiwer>=4.0.0",
-    "torch>=2.9.0",
-    "torchaudio>=2.9.0",
-    "torchcodec>=0.8.1",
-    "torchvision>=0.24.0",
-    "unsloth>=2024.8",
-    "unsloth-zoo>=2025.10.12",
+    "ruff>=0.14.4",
+    "torchaudio>=2.8.0",
+    "torchcodec==0.7.0",
+    "unsloth>=2025.11.1",
     "wandb>=0.22.2",
 ]

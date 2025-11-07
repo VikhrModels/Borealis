@@ -552,8 +552,6 @@ class AugmentationScheduler(TrainerCallback):
         key = stage.start_epoch
         if key not in self._pipelines_cache:
             self._pipelines_cache[key] = build_augmentation_pipeline(
-                noise_path=str(self.noise_path),
-                ir_path=str(self.ir_path),
                 config=stage.config,
                 sample_rate=self.sample_rate,
                 noise_bank=self.noise_bank,

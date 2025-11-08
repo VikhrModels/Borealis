@@ -551,9 +551,9 @@ class AugmentationScheduler(TrainerCallback):
             return None
         key = stage.start_epoch
         if key not in self._pipelines_cache:
-            self._pipelines_cache[key] = build_augmentation_pipeline(
-                config=stage.config,
+            self._pipelines_cache[key] = AugmentationPipeline(
                 sample_rate=self.sample_rate,
+                config=stage.config,
                 noise_bank=self.noise_bank,
                 ir_bank=self.ir_bank,
             )

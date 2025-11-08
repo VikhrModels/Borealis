@@ -215,8 +215,8 @@ def compute_metrics(eval_pred):
     predictions = np.where(predictions == -100, tokenizer.pad_token_id, predictions)
     predictions = np.clip(predictions, 0, len(tokenizer) - 1)
 
-    decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=False)
-    decoded_preds = [extract_assistant_content(pred).lower() for pred in decoded_preds]
+    decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
+    decoded_preds = [pred.strip().lower() for pred in decoded_preds]
 
     labels = np.where(labels == -100, tokenizer.pad_token_id, labels)
     decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=False)
@@ -232,16 +232,8 @@ def compute_metrics(eval_pred):
         for i in indices:
             print(f"Reference: {decoded_labels[i]}\nGenerated: {decoded_preds[i]}\n")
 
-    valid_pairs = [
-        (ref, pred) for ref, pred in zip(decoded_labels, decoded_preds) if ref and pred
-    ]
-    if valid_pairs:
-        valid_labels, valid_preds = zip(*valid_pairs)
-        wer_score = jiwer.wer(list(valid_labels), list(valid_preds))
-        cer_score = jiwer.cer(list(valid_labels), list(valid_preds))
-    else:
-        wer_score = 1.0
-        cer_score = 1.0
+    wer_score = jiwer.wer(decoded_labels, decoded_preds)
+    cer_score = jiwer.cer(decoded_labels, decoded_preds)
 
     return {"wer": wer_score, "cer": cer_score}
 

@@ -219,7 +219,8 @@ class AugmentationPipeline:
         noise_waveform = self._resample_tensor(
             noise_waveform, noise_sr, self.sample_rate
         )
-        noise_waveform = self._match_length(noise_waveform, target_length)
+
+        noise_waveform = self._match_length(noise_waveform, waveform.shape[-1])
         waveform = add_noise(waveform, noise_waveform, snr_db)
 
         extra_noises = (
@@ -233,7 +234,7 @@ class AugmentationPipeline:
             noise_extra = self._resample_tensor(
                 noise_extra, noise_sr_extra, self.sample_rate
             )
-            noise_extra = self._match_length(noise_extra, target_length)
+            noise_extra = self._match_length(noise_extra, waveform.shape[-1])
             waveform = add_noise(waveform, noise_extra, snr_extra)
 
         return waveform
@@ -248,7 +249,7 @@ class AugmentationPipeline:
         def apply_ir(wave, ir):
             ir = ir / ir.norm(p=2).clamp(min=1e-6)
             convolved = AF.fftconvolve(wave, ir, mode="full")
-            return convolved[..., :target_length]
+            return convolved[..., : wave.shape[-1]]
 
         ir_waveform, ir_sr = random.choice(self.ir_bank)
         ir_waveform = self._resample_tensor(ir_waveform, ir_sr, self.sample_rate)

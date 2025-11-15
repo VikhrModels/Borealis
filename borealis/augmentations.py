@@ -157,7 +157,16 @@ class AugmentationPipeline:
             else:
                 waveform = method(waveform)
 
-        waveform = waveform[..., :original_length]
+        current_length = waveform.shape[-1]
+        if current_length != original_length:
+            if current_length > original_length:
+                waveform = waveform[..., :original_length]
+            else:
+                pad_amount = original_length - current_length
+                waveform = Fnn.pad(
+                    waveform, (0, pad_amount), mode="constant", value=0.0
+                )
+
         return self._normalize(waveform, sample_rate)
 
     def apply_spec(self, mel: torch.Tensor) -> torch.Tensor:
@@ -315,14 +324,23 @@ class AugmentationPipeline:
 
     def _apply_codec(self, waveform: torch.Tensor, sample_rate: int) -> torch.Tensor:
         bitrate = self._uniform_int(self.config.codec_bitrate_range)
-        bit_rate_str = f"{max(32, bitrate)}k"
-        return AF.apply_codec(
-            waveform,
-            sample_rate,
-            format="mp3",
-            bit_rate=bit_rate_str,
-            channels_first=True,
-        )
+
+        try:
+            freq_cutoff = min(sample_rate // 2 - 100, 5000 + bitrate * 25)
+
+            degraded = AF.lowpass_biquad(waveform, sample_rate, freq_cutoff)
+
+            noise_level = 0.001 * (160 - bitrate) / 160
+            if noise_level > 0:
+                degraded = degraded + torch.randn_like(degraded) * noise_level
+
+            return degraded
+
+        except Exception as e:
+            warnings.warn(
+                f"[Augmentations] Codec simulation failed: {e}, returning original"
+            )
+            return waveform
 
     def _apply_clipping(self, waveform: torch.Tensor) -> torch.Tensor:
         threshold = self._uniform(self.config.clipping_range)

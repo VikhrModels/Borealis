@@ -7,8 +7,9 @@ requires-python = ">=3.13.8"
 dependencies = [
     "datasets>=4.2.0",
     "jiwer>=4.0.0",
+    "ruff>=0.14.4",
     "torchaudio>=2.8.0",
-    "torchcodec>=0.7.0",
-    "unsloth>=2025.10.1",
+    "torchcodec==0.7.0",
+    "unsloth>=2025.11.1",
     "wandb>=0.22.2",
 ]

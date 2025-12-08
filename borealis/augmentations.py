@@ -157,7 +157,16 @@ class AugmentationPipeline:
             else:
                 waveform = method(waveform)
 
-        waveform = waveform[..., :original_length]
+        current_length = waveform.shape[-1]
+        if current_length != original_length:
+            if current_length > original_length:
+                waveform = waveform[..., :original_length]
+            else:
+                pad_amount = original_length - current_length
+                waveform = Fnn.pad(
+                    waveform, (0, pad_amount), mode="constant", value=0.0
+                )
+
         return self._normalize(waveform, sample_rate)
 
     def apply_spec(self, mel: torch.Tensor) -> torch.Tensor:
@@ -219,7 +228,8 @@ class AugmentationPipeline:
         noise_waveform = self._resample_tensor(
             noise_waveform, noise_sr, self.sample_rate
         )
-        noise_waveform = self._match_length(noise_waveform, target_length)
+
+        noise_waveform = self._match_length(noise_waveform, waveform.shape[-1])
         waveform = add_noise(waveform, noise_waveform, snr_db)
 
         extra_noises = (
@@ -233,7 +243,7 @@ class AugmentationPipeline:
             noise_extra = self._resample_tensor(
                 noise_extra, noise_sr_extra, self.sample_rate
             )
-            noise_extra = self._match_length(noise_extra, target_length)
+            noise_extra = self._match_length(noise_extra, waveform.shape[-1])
             waveform = add_noise(waveform, noise_extra, snr_extra)
 
         return waveform
@@ -248,7 +258,7 @@ class AugmentationPipeline:
         def apply_ir(wave, ir):
             ir = ir / ir.norm(p=2).clamp(min=1e-6)
             convolved = AF.fftconvolve(wave, ir, mode="full")
-            return convolved[..., :target_length]
+            return convolved[..., : wave.shape[-1]]
 
         ir_waveform, ir_sr = random.choice(self.ir_bank)
         ir_waveform = self._resample_tensor(ir_waveform, ir_sr, self.sample_rate)
@@ -314,14 +324,23 @@ class AugmentationPipeline:
 
     def _apply_codec(self, waveform: torch.Tensor, sample_rate: int) -> torch.Tensor:
         bitrate = self._uniform_int(self.config.codec_bitrate_range)
-        bit_rate_str = f"{max(32, bitrate)}k"
-        return AF.apply_codec(
-            waveform,
-            sample_rate,
-            format="mp3",
-            bit_rate=bit_rate_str,
-            channels_first=True,
-        )
+
+        try:
+            freq_cutoff = min(sample_rate // 2 - 100, 5000 + bitrate * 25)
+
+            degraded = AF.lowpass_biquad(waveform, sample_rate, freq_cutoff)
+
+            noise_level = 0.001 * (160 - bitrate) / 160
+            if noise_level > 0:
+                degraded = degraded + torch.randn_like(degraded) * noise_level
+
+            return degraded
+
+        except Exception as e:
+            warnings.warn(
+                f"[Augmentations] Codec simulation failed: {e}, returning original"
+            )
+            return waveform
 
     def _apply_clipping(self, waveform: torch.Tensor) -> torch.Tensor:
         threshold = self._uniform(self.config.clipping_range)
@@ -551,11 +570,9 @@ class AugmentationScheduler(TrainerCallback):
             return None
         key = stage.start_epoch
         if key not in self._pipelines_cache:
-            self._pipelines_cache[key] = build_augmentation_pipeline(
-                noise_path=str(self.noise_path),
-                ir_path=str(self.ir_path),
-                config=stage.config,
+            self._pipelines_cache[key] = AugmentationPipeline(
                 sample_rate=self.sample_rate,
+                config=stage.config,
                 noise_bank=self.noise_bank,
                 ir_bank=self.ir_bank,
             )

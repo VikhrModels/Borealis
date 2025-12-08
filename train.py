@@ -28,7 +28,7 @@ from borealis.utils import (
     load_and_process_dataset,
     convert_numeric_strings,
 )
-
+from unsloth.chat_templates import get_chat_template
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -117,6 +117,11 @@ language_model, tokenizer = FastModel.from_pretrained(
     full_finetuning=config["model"]["language_model"]["full_finetuning"],
 )
 
+tokenizer = get_chat_template(
+    tokenizer,
+    chat_template="qwen3-instruct",
+)
+
 start_audio_token = config["model"]["special_tokens"]["start_audio"]
 end_audio_token = config["model"]["special_tokens"]["end_audio"]
 
@@ -196,21 +201,10 @@ class CustomTrainer(Trainer):
 
 
 def extract_assistant_content(text: str) -> str:
-    assistant_match = re.search(
-        r"<\|im_start\|>assistant\n(.*?)<\|im_end\|>", text, re.DOTALL
+    matches = re.findall(
+        r"<\|im_start\|>assistant\s*(.*?)<\|im_end\|>", text, re.DOTALL
     )
-    if not assistant_match:
-        return text.strip()
-
-    assistant_block = assistant_match.group(1).strip()
-
-    think_match = re.search(r"<think>\n\n</think>\n\n", assistant_block, re.DOTALL)
-    if think_match:
-        assistant_block = re.sub(
-            r"<think>.*?</think>", "", assistant_block, flags=re.DOTALL
-        ).strip()
-
-    return assistant_block
+    return matches[-1].strip() if matches else ""
 
 
 def compute_metrics(eval_pred):
@@ -222,17 +216,18 @@ def compute_metrics(eval_pred):
     predictions = np.clip(predictions, 0, len(tokenizer) - 1)
 
     decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
-    decoded_preds = [extract_assistant_content(pred).lower() for pred in decoded_preds]
+    decoded_preds = [pred.strip().lower() for pred in decoded_preds]
 
     labels = np.where(labels == -100, tokenizer.pad_token_id, labels)
-    decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+    decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=False)
     decoded_labels = [
         extract_assistant_content(label).lower() for label in decoded_labels
     ]
 
     if len(decoded_preds) > 1:
         indices = random.sample(
-            range(len(decoded_preds)), config["metrics"]["random_samples"]
+            range(len(decoded_preds)),
+            min(config["metrics"]["random_samples"], len(decoded_preds)),
         )
         for i in indices:
             print(f"Reference: {decoded_labels[i]}\nGenerated: {decoded_preds[i]}\n")

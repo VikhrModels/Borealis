@@ -112,7 +112,7 @@ model:
     pretrained: "openai/whisper-large-v3"
     dtype: "bfloat16" 
   language_model:
-    pretrained: "Unsloth/Qwen3-4B-Thinking-2507"
+    pretrained: "Qwen/Qwen3-4B-Instruct-2507"
     full_finetuning: true
   special_tokens:
     start_audio: "<|start_of_audio|>"

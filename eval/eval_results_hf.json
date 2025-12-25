@@ -1,0 +1,130 @@
+{
+  "baseline": {
+    "Russian_LibriSpeech": {
+      "wer": 6.63,
+      "cer": 3.49,
+      "samples": 1000
+    },
+    "Common_Voice_Corpus_22.0": {
+      "wer": 8.88,
+      "cer": 5.04,
+      "samples": 1000
+    },
+    "Tone_Webinars": {
+      "wer": 56.87,
+      "cer": 52.47,
+      "samples": 1000
+    },
+    "Tone_Books": {
+      "wer": 6.03,
+      "cer": 3.75,
+      "samples": 1000
+    },
+    "Tone_Speak": {
+      "wer": 4.63,
+      "cer": 3.38,
+      "samples": 700
+    },
+    "Sova_RuDevices": {
+      "wer": 17.28,
+      "cer": 8.03,
+      "samples": 1000
+    }
+  },
+  "step-1800": {
+    "Russian_LibriSpeech": {
+      "wer": 5.85,
+      "cer": 2.78,
+      "samples": 1000
+    },
+    "Common_Voice_Corpus_22.0": {
+      "wer": 12.65,
+      "cer": 8.63,
+      "samples": 1000
+    },
+    "Tone_Webinars": {
+      "wer": 60.34,
+      "cer": 54.05,
+      "samples": 1000
+    },
+    "Tone_Books": {
+      "wer": 5.22,
+      "cer": 2.68,
+      "samples": 1000
+    },
+    "Tone_Speak": {
+      "wer": 6.49,
+      "cer": 5.2,
+      "samples": 700
+    },
+    "Sova_RuDevices": {
+      "wer": 20.18,
+      "cer": 10.68,
+      "samples": 1000
+    }
+  },
+  "step-2400": {
+    "Russian_LibriSpeech": {
+      "wer": 5.76,
+      "cer": 2.72,
+      "samples": 1000
+    },
+    "Common_Voice_Corpus_22.0": {
+      "wer": 12.68,
+      "cer": 8.59,
+      "samples": 1000
+    },
+    "Tone_Webinars": {
+      "wer": 59.65,
+      "cer": 54.16,
+      "samples": 1000
+    },
+    "Tone_Books": {
+      "wer": 5.28,
+      "cer": 2.74,
+      "samples": 1000
+    },
+    "Tone_Speak": {
+      "wer": 6.46,
+      "cer": 5.16,
+      "samples": 700
+    },
+    "Sova_RuDevices": {
+      "wer": 19.96,
+      "cer": 10.49,
+      "samples": 1000
+    }
+  },
+  "step-2898": {
+    "Russian_LibriSpeech": {
+      "wer": 5.64,
+      "cer": 2.59,
+      "samples": 1000
+    },
+    "Common_Voice_Corpus_22.0": {
+      "wer": 12.67,
+      "cer": 8.59,
+      "samples": 1000
+    },
+    "Tone_Webinars": {
+      "wer": 60.55,
+      "cer": 54.2,
+      "samples": 1000
+    },
+    "Tone_Books": {
+      "wer": 5.25,
+      "cer": 2.75,
+      "samples": 1000
+    },
+    "Tone_Speak": {
+      "wer": 6.49,
+      "cer": 5.19,
+      "samples": 700
+    },
+    "Sova_RuDevices": {
+      "wer": 21.57,
+      "cer": 11.48,
+      "samples": 1000
+    }
+  }
+}

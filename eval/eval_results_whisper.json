@@ -1,0 +1,34 @@
+{
+  "whisper-large-v3": {
+    "Russian_LibriSpeech": {
+      "wer": 11.68,
+      "cer": 2.72,
+      "samples": 1000
+    },
+    "Common_Voice_Corpus_22.0": {
+      "wer": 12.23,
+      "cer": 4.75,
+      "samples": 1000
+    },
+    "Tone_Webinars": {
+      "wer": 7.77,
+      "cer": 5.36,
+      "samples": 1000
+    },
+    "Tone_Books": {
+      "wer": 11.95,
+      "cer": 3.41,
+      "samples": 1000
+    },
+    "Tone_Speak": {
+      "wer": 2.68,
+      "cer": 0.46,
+      "samples": 700
+    },
+    "Sova_RuDevices": {
+      "wer": 19.87,
+      "cer": 9.36,
+      "samples": 1000
+    }
+  }
+}

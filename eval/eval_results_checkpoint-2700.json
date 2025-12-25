@@ -1,0 +1,36 @@
+{
+  "checkpoint": "checkpoint-2700",
+  "avg_wer": 75.22,
+  "splits": {
+    "Russian_LibriSpeech": {
+      "wer": 14.79,
+      "cer": 9.48,
+      "samples": 1000
+    },
+    "Common_Voice_Corpus_22.0": {
+      "wer": 208.86,
+      "cer": 175.7,
+      "samples": 1000
+    },
+    "Tone_Webinars": {
+      "wer": 103.22,
+      "cer": 91.95,
+      "samples": 1000
+    },
+    "Tone_Books": {
+      "wer": 58.09,
+      "cer": 51.24,
+      "samples": 1000
+    },
+    "Tone_Speak": {
+      "wer": 25.71,
+      "cer": 18.84,
+      "samples": 700
+    },
+    "Sova_RuDevices": {
+      "wer": 40.63,
+      "cer": 30.48,
+      "samples": 1000
+    }
+  }
+}

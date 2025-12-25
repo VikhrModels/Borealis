@@ -1,0 +1,28 @@
+{
+  "checkpoint": "checkpoint-32000",
+  "overall_accuracy": 48.9,
+  "total_correct": 489,
+  "total_samples": 1000,
+  "categories": {
+    "formal_fallacies": {
+      "accuracy": 47.2,
+      "correct": 118,
+      "total": 250
+    },
+    "navigate": {
+      "accuracy": 61.2,
+      "correct": 153,
+      "total": 250
+    },
+    "object_counting": {
+      "accuracy": 36.8,
+      "correct": 92,
+      "total": 250
+    },
+    "web_of_lies": {
+      "accuracy": 50.4,
+      "correct": 126,
+      "total": 250
+    }
+  }
+}

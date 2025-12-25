@@ -209,3 +209,60 @@ __marimo__/
 data_for_augs/
 unsloth_compiled_cache/
 wandb/
+
+# Training checkpoints and model outputs
+checkpoints/
+models/
+borealis_*/
+*.safetensors
+*.bin
+*.pt
+*.pth
+
+# Dataset checkpoints (large temp files)
+instruct_dataset_checkpoint_*.json
+ficbook_dataset_checkpoint.json
+ficbook_tts_checkpoint.json
+
+# Generated datasets (large)
+*.parquet
+tonebooks_instruct_*.json
+ficbook_instruct_*.json
+
+# Audio data
+ficbook_audio/
+
+# Dataset folders
+tonebooks_instruct_*/
+ficbook_instruct_*/
+
+# Ablations and experiments
+ablations/
+
+# HuggingFace upload/deploy
+hf_space/
+hf_upload/
+
+# Gradio cache
+.gradio/
+
+# Logs
+*.log
+training_log.txt
+generate_log.txt
+
+# Generated images
+task_distribution.png
+voice_distribution.png
+
+# Configs (keep templates in configs/)
+accelerate_config.yaml
+
+# Jupyter notebooks (demo)
+Borealis_Demo.ipynb
+
+# Blog drafts
+blog/
+
+# vLLM build
+vllm_borealis/

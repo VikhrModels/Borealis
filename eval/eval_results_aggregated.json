@@ -1,0 +1,181 @@
+{
+  "best_checkpoint": "checkpoint-2400",
+  "best_avg_wer": 68.18,
+  "all_results": {
+    "checkpoint-1800": {
+      "avg_wer": 80.19,
+      "splits": {
+        "Russian_LibriSpeech": {
+          "wer": 15.19,
+          "cer": 10.97,
+          "samples": 1000
+        },
+        "Common_Voice_Corpus_22.0": {
+          "wer": 229.1,
+          "cer": 188.26,
+          "samples": 1000
+        },
+        "Tone_Webinars": {
+          "wer": 99.67,
+          "cer": 88.65,
+          "samples": 1000
+        },
+        "Tone_Books": {
+          "wer": 64.7,
+          "cer": 53.57,
+          "samples": 1000
+        },
+        "Tone_Speak": {
+          "wer": 26.43,
+          "cer": 19.59,
+          "samples": 700
+        },
+        "Sova_RuDevices": {
+          "wer": 46.02,
+          "cer": 37.99,
+          "samples": 1000
+        }
+      }
+    },
+    "checkpoint-2100": {
+      "avg_wer": 76.84,
+      "splits": {
+        "Russian_LibriSpeech": {
+          "wer": 14.06,
+          "cer": 10.06,
+          "samples": 1000
+        },
+        "Common_Voice_Corpus_22.0": {
+          "wer": 223.92,
+          "cer": 183.12,
+          "samples": 1000
+        },
+        "Tone_Webinars": {
+          "wer": 99.89,
+          "cer": 88.98,
+          "samples": 1000
+        },
+        "Tone_Books": {
+          "wer": 54.27,
+          "cer": 45.13,
+          "samples": 1000
+        },
+        "Tone_Speak": {
+          "wer": 22.32,
+          "cer": 17.25,
+          "samples": 700
+        },
+        "Sova_RuDevices": {
+          "wer": 46.59,
+          "cer": 36.47,
+          "samples": 1000
+        }
+      }
+    },
+    "checkpoint-2400": {
+      "avg_wer": 68.18,
+      "splits": {
+        "Russian_LibriSpeech": {
+          "wer": 14.85,
+          "cer": 9.94,
+          "samples": 1000
+        },
+        "Common_Voice_Corpus_22.0": {
+          "wer": 181.09,
+          "cer": 153.64,
+          "samples": 1000
+        },
+        "Tone_Webinars": {
+          "wer": 100.67,
+          "cer": 89.87,
+          "samples": 1000
+        },
+        "Tone_Books": {
+          "wer": 44.83,
+          "cer": 40.17,
+          "samples": 1000
+        },
+        "Tone_Speak": {
+          "wer": 24.83,
+          "cer": 19.12,
+          "samples": 700
+        },
+        "Sova_RuDevices": {
+          "wer": 42.81,
+          "cer": 35.17,
+          "samples": 1000
+        }
+      }
+    },
+    "checkpoint-2700": {
+      "avg_wer": 75.22,
+      "splits": {
+        "Russian_LibriSpeech": {
+          "wer": 14.79,
+          "cer": 9.48,
+          "samples": 1000
+        },
+        "Common_Voice_Corpus_22.0": {
+          "wer": 208.86,
+          "cer": 175.7,
+          "samples": 1000
+        },
+        "Tone_Webinars": {
+          "wer": 103.22,
+          "cer": 91.95,
+          "samples": 1000
+        },
+        "Tone_Books": {
+          "wer": 58.09,
+          "cer": 51.24,
+          "samples": 1000
+        },
+        "Tone_Speak": {
+          "wer": 25.71,
+          "cer": 18.84,
+          "samples": 700
+        },
+        "Sova_RuDevices": {
+          "wer": 40.63,
+          "cer": 30.48,
+          "samples": 1000
+        }
+      }
+    },
+    "checkpoint-2964": {
+      "avg_wer": 80.65,
+      "splits": {
+        "Russian_LibriSpeech": {
+          "wer": 12.6,
+          "cer": 8.38,
+          "samples": 1000
+        },
+        "Common_Voice_Corpus_22.0": {
+          "wer": 243.67,
+          "cer": 201.41,
+          "samples": 1000
+        },
+        "Tone_Webinars": {
+          "wer": 100.2,
+          "cer": 90.17,
+          "samples": 1000
+        },
+        "Tone_Books": {
+          "wer": 57.55,
+          "cer": 49.07,
+          "samples": 1000
+        },
+        "Tone_Speak": {
+          "wer": 28.32,
+          "cer": 22.05,
+          "samples": 700
+        },
+        "Sova_RuDevices": {
+          "wer": 41.54,
+          "cer": 34.77,
+          "samples": 1000
+        }
+      }
+    }
+  }
+}

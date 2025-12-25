@@ -1,0 +1,87 @@
+wandb:
+  entity: "vikhr-audio"
+  project: "Borealis-Ficbook"
+
+
+datasets:
+  mode: "instruct"
+
+  train:
+    - name: "/home/alex/Borealis/ficbook_instruct_with_audio"
+      split: "train"
+      columns: ["audio", "question", "answer"]
+      question_column: "question"
+      answer_column: "answer"
+      audio_column: "audio"
+
+  val:
+    - name: "/home/alex/Borealis/ficbook_instruct_with_audio"
+      split: "train"
+      columns: ["audio", "question", "answer"]
+      question_column: "question"
+      answer_column: "answer"
+      audio_column: "audio"
+      select_range: 100
+
+  noise:
+    name: "Vikhrmodels/Audio_Noise_Dataset"
+    split: "Musan"
+  ir:
+    name: "Vikhrmodels/Audio_Noise_Dataset"
+    split: "Echo"
+
+  num_proc: 8
+  sampling_rate: 16000
+
+model:
+  whisper:
+    pretrained: "openai/whisper-large-v3"
+    dtype: "bfloat16"
+  language_model:
+    pretrained: "./models/Qwen3-4B"
+    full_finetuning: true
+  # Best checkpoint from evaluation (checkpoint-2400: avg WER 68.18%)
+  checkpoint_path: "./borealis_ru_it/checkpoint-2400/pytorch_model.bin"
+  special_tokens:
+    start_audio: "<|start_of_audio|>"
+    end_audio: "<|end_of_audio|>"
+  max_text_len: 1024
+
+instruct:
+  default_system_prompt: "You are a helpful voice assistant. Listen to the audio and respond appropriately."
+
+augmentation:
+  sample_rate: 16000
+  stages: "default"
+
+training:
+  output_dir: "./borealis_ficbook"
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 16
+  dataloader_num_workers: 8
+  save_total_limit: 3
+  num_train_epochs: 3
+  warmup_ratio: 0.03
+  learning_rate: 1e-5
+  bf16: true
+  eval_strategy: "steps"
+  save_strategy: "steps"
+  eval_steps: 500
+  save_steps: 500
+  logging_steps: 10
+  report_to: "wandb"
+  save_safetensors: false
+  optim: "adamw_torch"
+  lr_scheduler_type: "cosine"
+  gradient_checkpointing: false
+
+generation:
+  max_new_tokens: 512
+  do_sample: true
+  temperature: 0.7
+  top_p: 0.9
+  repetition_penalty: 1.1
+
+metrics:
+  random_samples: 3

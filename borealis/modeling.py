@@ -112,6 +112,9 @@ class BorealisForConditionalGeneration(nn.Module):
     ):
         B, device = labels.size(0), labels.device
 
+        # Convert mel to bfloat16 to match encoder dtype
+        mel = [[c.to(torch.bfloat16) for c in m] for m in mel]
+
         audio_embeddings, audio_mask, per_sample_T = self._process_audio(mel)
 
         text_embeddings = self.llm.get_input_embeddings()(labels)
@@ -124,8 +127,10 @@ class BorealisForConditionalGeneration(nn.Module):
         assistant_starts = []
 
         for b in range(B):
-            sa_idx = sa_positions[1][sa_positions[0] == b].item()
-            ea_idx = ea_positions[1][ea_positions[0] == b].item()
+            sa_indices = sa_positions[1][sa_positions[0] == b]
+            ea_indices = ea_positions[1][ea_positions[0] == b]
+            sa_idx = sa_indices[0].item() if len(sa_indices) > 0 else 0
+            ea_idx = ea_indices[0].item() if len(ea_indices) > 0 else sa_idx + 1
 
             prefix_emb = text_embeddings[b, : sa_idx + 1]
             postfix_emb = text_embeddings[b, ea_idx:]
@@ -176,8 +181,10 @@ class BorealisForConditionalGeneration(nn.Module):
         loss_labels = labels.new_full((B, max_len), -100)
 
         for b in range(B):
-            sa_idx = sa_positions[1][sa_positions[0] == b].item()
-            ea_idx = ea_positions[1][ea_positions[0] == b].item()
+            sa_indices = sa_positions[1][sa_positions[0] == b]
+            ea_indices = ea_positions[1][ea_positions[0] == b]
+            sa_idx = sa_indices[0].item() if len(sa_indices) > 0 else 0
+            ea_idx = ea_indices[0].item() if len(ea_indices) > 0 else sa_idx + 1
 
             orig_assist_start = (
                 assistant_starts[b] - per_sample_T[b] + (ea_idx - sa_idx - 1)
@@ -207,6 +214,8 @@ class BorealisForConditionalGeneration(nn.Module):
         self,
         mel,
         max_new_tokens: int = 512,
+        system_prompt: str = None,
+        user_prompt: str = None,
         **kwargs,
     ):
         if not isinstance(mel, list) or len(mel) == 0 or not isinstance(mel[0], list):
@@ -218,15 +227,16 @@ class BorealisForConditionalGeneration(nn.Module):
 
         audio_embeddings, audio_mask, per_sample_T = self._process_audio(mel)
 
+        if system_prompt is None:
+            system_prompt = "Вы полезный помощник по автоматическому распознаванию речи. Точно транскрибируйте аудио в текст."
+        if user_prompt is None:
+            user_prompt = "Транскрибируйте это аудио: <|start_of_audio|><|end_of_audio|>"
+        elif "<|start_of_audio|>" not in user_prompt:
+            user_prompt = f"{user_prompt}\n<|start_of_audio|><|end_of_audio|>"
+
         messages = [
-            {
-                "role": "system",
-                "content": "Вы полезный помощник по автоматическому распознаванию речи. Точно транскрибируйте аудио в текст.",
-            },
-            {
-                "role": "user",
-                "content": "Транскрибируйте это аудио: <|start_of_audio|><|end_of_audio|>",
-            },
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
         ]
 
         chat_text = self.tokenizer.apply_chat_template(

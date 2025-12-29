@@ -29,7 +29,7 @@ apply_liger_kernel_to_qwen2()
 #     AugmentationScheduler,
 #     default_augmentation_stages,
 # )
-from borealis.dataset import BorealisInstructDataset, BorealisTextOnlyDataset
+from borealis.dataset import BorealisInstructDataset, BorealisTextOnlyDataset, BorealisClassificationDataset
 from borealis.modeling import BorealisForConditionalGeneration
 from borealis.utils import AudioCollator, convert_numeric_strings
 # from unsloth.chat_templates import get_chat_template  # Disabled for multi-GPU
@@ -147,6 +147,28 @@ if "text_train" in config["datasets"]:
         text_ds_configs.append(ds_config)
         print(f"    Loaded {len(ds)} text examples")
 
+# Load classification datasets if configured
+classification_ds_list = []
+classification_ds_configs = []
+if "classification_train" in config["datasets"]:
+    print("Loading classification datasets...")
+    for ds_config in config["datasets"]["classification_train"]:
+        print(f"  Loading {ds_config['name']} ({ds_config.get('split', 'train')})...")
+        ds = load_dataset(
+            ds_config["name"],
+            split=ds_config.get("split", "train"),
+            num_proc=config["datasets"]["num_proc"],
+        )
+        # Cast audio column
+        audio_col = ds_config.get("audio_column", "audio")
+        if audio_col in ds.column_names:
+            ds = ds.cast_column(audio_col, Audio(sampling_rate=config["datasets"]["sampling_rate"]))
+        if "select_range" in ds_config:
+            ds = ds.select(range(min(ds_config["select_range"], len(ds))))
+        classification_ds_list.append(ds)
+        classification_ds_configs.append(ds_config)
+        print(f"    Loaded {len(ds)} classification examples")
+
 whisper_encoder = WhisperFeatureExtractor.from_pretrained(
     config["model"]["whisper"]["pretrained"]
 )
@@ -199,6 +221,8 @@ class CombinedInstructDataset(torch.utils.data.Dataset):
         augmentations=None,
         text_datasets_list=None,
         text_configs_list=None,
+        classification_datasets_list=None,
+        classification_configs_list=None,
     ):
         self.datasets = []
         self.lengths = []
@@ -238,6 +262,23 @@ class CombinedInstructDataset(torch.utils.data.Dataset):
                 self.lengths.append(len(ds))
                 self.cumulative_lengths.append(self.cumulative_lengths[-1] + len(ds))
 
+        # Add classification datasets
+        if classification_datasets_list and classification_configs_list:
+            for ds, cfg in zip(classification_datasets_list, classification_configs_list):
+                wrapped = BorealisClassificationDataset(
+                    hf_dataset=ds,
+                    tokenizer=tokenizer,
+                    feature_extractor=feature_extractor,
+                    max_text_len=max_text_len,
+                    default_system_prompt="You are an emotion recognition assistant. Analyze the audio and identify the emotional state.",
+                    audio_column=cfg.get("audio_column", "audio"),
+                    label_column=cfg.get("label_column", "label"),
+                    use_russian=cfg.get("use_russian", True),
+                )
+                self.datasets.append(wrapped)
+                self.lengths.append(len(ds))
+                self.cumulative_lengths.append(self.cumulative_lengths[-1] + len(ds))
+
     def __len__(self):
         return self.cumulative_lengths[-1]
 
@@ -265,6 +306,8 @@ train_dataset = CombinedInstructDataset(
     augmentations=None,
     text_datasets_list=text_ds_list if text_ds_list else None,
     text_configs_list=text_ds_configs if text_ds_configs else None,
+    classification_datasets_list=classification_ds_list if classification_ds_list else None,
+    classification_configs_list=classification_ds_configs if classification_ds_configs else None,
 )
 
 eval_dataset = CombinedInstructDataset(
@@ -288,7 +331,10 @@ audio_encoder = WhisperModel.from_pretrained(
 ).encoder
 
 model = BorealisForConditionalGeneration(
-    audio_encoder=audio_encoder, language_model=language_model, tokenizer=tokenizer
+    audio_encoder=audio_encoder,
+    language_model=language_model,
+    tokenizer=tokenizer,
+    adapter_config=config["model"].get("adapter"),
 )
 
 # Freeze LLM if full_finetuning is False (train only adapter/projector)
@@ -318,8 +364,13 @@ if checkpoint_path:
             cache_dir=".cache/checkpoints"
         )
         checkpoint = torch.load(local_ckpt_path, map_location="cpu", weights_only=False)
+    elif checkpoint_path.endswith(".safetensors"):
+        # Load safetensors format
+        from safetensors.torch import load_file
+        print(f"Loading safetensors checkpoint: {checkpoint_path}")
+        checkpoint = load_file(checkpoint_path)
     else:
-        # Local file path
+        # Local pytorch file path
         checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     missing, unexpected = model.load_state_dict(checkpoint, strict=False)
     print(f"Loaded checkpoint. Missing keys: {len(missing)}, Unexpected keys: {len(unexpected)}")

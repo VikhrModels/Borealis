@@ -5,7 +5,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_PATH="$SCRIPT_DIR/.venv/bin/activate"
-CONFIG_PATH="$SCRIPT_DIR/configs/Borealis_5B_instruct.yaml"
+CONFIG_PATH="$SCRIPT_DIR/configs/Borealis_combined_adapter_8gpu.yaml"
 SCREEN_NAME="borealis_train"
 
 # Check if screen session already exists

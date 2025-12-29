@@ -5,6 +5,7 @@ import torch.nn.functional as F
 
 
 class AudioLanguageAdapter(nn.Module):
+    """Simple 2-layer adapter (~31M params for Whisper-large + Qwen3-4B)."""
     def __init__(self, hidden_size: int, dim: int) -> None:
         super().__init__()
         self.w_in = nn.Linear(hidden_size, dim, bias=False)
@@ -15,6 +16,83 @@ class AudioLanguageAdapter(nn.Module):
         return self.w_out(self.gelu(self.w_in(x)))
 
 
+class AudioLanguageAdapterDeep(nn.Module):
+    """Deeper adapter with expansion and residual connections (~80M params).
+
+    Architecture:
+    - Input projection with expansion (hidden_size -> dim * expansion_factor)
+    - N transformer-like blocks with LayerNorm + MLP + residual
+    - Output projection (dim * expansion_factor -> dim)
+
+    For Whisper-large (1280*4=5120) + Qwen3-4B (3584):
+    - expansion_factor=1.5, num_layers=3 -> ~80M params
+    - expansion_factor=2.0, num_layers=4 -> ~150M params
+    """
+    def __init__(
+        self,
+        hidden_size: int,
+        dim: int,
+        num_layers: int = 3,
+        expansion_factor: float = 1.5,
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+
+        self.hidden_dim = int(dim * expansion_factor)
+
+        # Input projection
+        self.input_proj = nn.Sequential(
+            nn.Linear(hidden_size, self.hidden_dim, bias=False),
+            nn.LayerNorm(self.hidden_dim),
+            nn.GELU(),
+        )
+
+        # Deep MLP blocks with residual connections
+        self.layers = nn.ModuleList()
+        for _ in range(num_layers):
+            self.layers.append(nn.ModuleDict({
+                'norm': nn.LayerNorm(self.hidden_dim),
+                'mlp': nn.Sequential(
+                    nn.Linear(self.hidden_dim, self.hidden_dim * 2, bias=False),
+                    nn.GELU(),
+                    nn.Dropout(dropout),
+                    nn.Linear(self.hidden_dim * 2, self.hidden_dim, bias=False),
+                    nn.Dropout(dropout),
+                ),
+            }))
+
+        # Output projection
+        self.output_proj = nn.Sequential(
+            nn.LayerNorm(self.hidden_dim),
+            nn.Linear(self.hidden_dim, dim, bias=False),
+        )
+
+        # Initialize weights
+        self._init_weights()
+
+    def _init_weights(self):
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Input projection
+        x = self.input_proj(x)
+
+        # Deep layers with residual
+        for layer in self.layers:
+            residual = x
+            x = layer['norm'](x)
+            x = layer['mlp'](x)
+            x = x + residual
+
+        # Output projection
+        x = self.output_proj(x)
+        return x
+
+
 class BorealisForConditionalGeneration(nn.Module):
     def __init__(
         self,
@@ -22,6 +100,7 @@ class BorealisForConditionalGeneration(nn.Module):
         tokenizer=None,
         language_model=None,
         downsample_factor: int = 4,
+        adapter_config: dict = None,
     ):
         super().__init__()
 
@@ -41,10 +120,33 @@ class BorealisForConditionalGeneration(nn.Module):
         print("Tokenizer PAD token ID:", tokenizer.pad_token_id)
 
         self.downsample_factor = downsample_factor
-        self.adapter = AudioLanguageAdapter(
-            hidden_size=self.encoder.config.d_model * downsample_factor,
-            dim=self.llm.config.hidden_size,
-        ).to(self.llm.dtype)
+
+        # Configure adapter
+        adapter_config = adapter_config or {}
+        adapter_type = adapter_config.get("type", "simple")
+        hidden_size = self.encoder.config.d_model * downsample_factor
+        dim = self.llm.config.hidden_size
+
+        if adapter_type == "deep":
+            self.adapter = AudioLanguageAdapterDeep(
+                hidden_size=hidden_size,
+                dim=dim,
+                num_layers=adapter_config.get("num_layers", 3),
+                expansion_factor=adapter_config.get("expansion_factor", 1.5),
+                dropout=adapter_config.get("dropout", 0.1),
+            ).to(self.llm.dtype)
+            print(f"Using deep adapter: {adapter_config.get('num_layers', 3)} layers, "
+                  f"expansion={adapter_config.get('expansion_factor', 1.5)}")
+        else:
+            self.adapter = AudioLanguageAdapter(
+                hidden_size=hidden_size,
+                dim=dim,
+            ).to(self.llm.dtype)
+            print("Using simple adapter")
+
+        # Count adapter params
+        adapter_params = sum(p.numel() for p in self.adapter.parameters())
+        print(f"Adapter parameters: {adapter_params:,} ({adapter_params/1e6:.1f}M)")
 
         self.bos_id = tokenizer.convert_tokens_to_ids("<|im_start|>")
         self.audio_start_id = tokenizer.convert_tokens_to_ids("<|start_of_audio|>")

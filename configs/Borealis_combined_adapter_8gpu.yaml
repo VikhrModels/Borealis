@@ -1,0 +1,159 @@
+wandb:
+  entity: "vikhr-audio"
+  project: "Borealis-Combined-Adapter-Deep"
+
+datasets:
+  mode: "instruct"
+
+  train:
+    # Long audio IT datasets
+    - name: "AlexWortega/long_audio_it_full_final"
+      split: "train"
+      columns: ["audio", "instruction", "response"]
+      question_column: "instruction"
+      answer_column: "response"
+      audio_column: "audio"
+    - name: "AlexWortega/long_audio_it_full"
+      split: "train"
+      columns: ["audio", "instruction", "response"]
+      question_column: "instruction"
+      answer_column: "response"
+      audio_column: "audio"
+    # Main IT datasets
+    - name: "Vikhrmodels/Speech-Instructions"
+      split: "train"
+      columns: ["audio", "question", "answer"]
+      question_column: "question"
+      answer_column: "answer"
+      audio_column: "audio"
+    - name: "Vikhrmodels/AudioBooksInstructGemini2.5"
+      split: "train"
+      columns: ["audio", "question", "answer"]
+      question_column: "question"
+      answer_column: "answer"
+      audio_column: "audio"
+    # ASR data
+    - name: "Vikhrmodels/ToneBooksPlus"
+      split: "train"
+      columns: ["audio", "text"]
+      audio_column: "audio"
+      answer_column: "text"
+      static_question: "Transcribe the audio."
+      select_range: 100000
+    - name: "Vikhrmodels/ToneSpeak"
+      split: "train"
+      columns: ["audio", "text"]
+      audio_column: "audio"
+      answer_column: "text"
+      static_question: "Transcribe the audio."
+      select_range: 100000
+    - name: "Vikhrmodels/ToneRuLS"
+      split: "train"
+      columns: ["audio", "text"]
+      audio_column: "audio"
+      answer_column: "text"
+      static_question: "Transcribe the audio."
+      select_range: 100000
+    - name: "Vikhrmodels/ToneRuDevices"
+      split: "train"
+      columns: ["audio", "text"]
+      audio_column: "audio"
+      answer_column: "text"
+      static_question: "Transcribe the audio."
+      select_range: 50000
+
+  val:
+    - name: "Vikhrmodels/Speech-Instructions"
+      split: "train"
+      columns: ["audio", "question", "answer"]
+      question_column: "question"
+      answer_column: "answer"
+      audio_column: "audio"
+      select_range: 200
+
+  # Text-only instruction data (100k Russian)
+  text_train:
+    - name: "Vikhrmodels/GrandMaster-PRO-MAX"
+      split: "train"
+      select_range: 100000
+      filter_lang: "ru"
+
+  # Classification datasets (emotion recognition with diverse instructions)
+  classification_train:
+    - name: "Hemg/Emotion-audio-Dataset"
+      split: "train"
+      audio_column: "audio"
+      label_column: "label"
+      use_russian: true  # Include Russian instructions too
+
+  noise:
+    name: "Vikhrmodels/Audio_Noise_Dataset"
+    split: "Musan"
+  ir:
+    name: "Vikhrmodels/Audio_Noise_Dataset"
+    split: "Echo"
+
+  num_proc: 8
+  sampling_rate: 16000
+
+model:
+  whisper:
+    pretrained: "openai/whisper-large-v3"
+    dtype: "bfloat16"
+  language_model:
+    pretrained: "Qwen/Qwen3-4B"
+  # No checkpoint - start fresh (adapter from scratch)
+  # checkpoint_path: null
+  # Adapter-only training (freeze LLM, train only adapter)
+  full_finetuning: false
+  # Deep adapter config (~80M params instead of ~31M)
+  adapter:
+    type: "deep"
+    num_layers: 3
+    expansion_factor: 1.5
+    dropout: 0.1
+  special_tokens:
+    start_audio: "<|start_of_audio|>"
+    end_audio: "<|end_of_audio|>"
+  max_text_len: 2048
+
+instruct:
+  default_system_prompt: "You are a helpful voice assistant. Listen to the audio and respond appropriately."
+
+augmentation:
+  sample_rate: 16000
+  stages: "default"
+
+training:
+  output_dir: "./borealis_combined_adapter"
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 8  # 8 GPUs x 1 batch x 8 accum = 64 effective
+  dataloader_num_workers: 8
+  remove_unused_columns: false
+  save_total_limit: 5
+  num_train_epochs: 3
+  warmup_ratio: 0.03
+  learning_rate: 1e-4  # Higher LR for adapter-only training
+  bf16: true
+  eval_strategy: "steps"
+  save_strategy: "steps"
+  eval_steps: 1000
+  save_steps: 2000
+  logging_steps: 10
+  report_to: "wandb"
+  run_name: "borealis_combined_adapter_8gpu"
+  save_safetensors: false
+  optim: "adamw_torch"
+  lr_scheduler_type: "cosine"
+  gradient_checkpointing: false
+
+generation:
+  max_new_tokens: 512
+  do_sample: true
+  temperature: 0.7
+  top_p: 0.9
+  repetition_penalty: 1.1
+
+metrics:
+  random_samples: 5
